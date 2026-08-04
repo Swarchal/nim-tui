@@ -5,7 +5,10 @@
 ## someone types an accent.
 
 import std/[unicode, sequtils]
-import nimtui
+import ./[ansi, style, messages]
+# `messages` comes with it: `handleKey` takes a `KeyMsg`, so a caller cannot
+# use this module without that type.
+export style, messages
 
 type
   TextInput* = object

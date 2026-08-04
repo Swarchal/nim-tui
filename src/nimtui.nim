@@ -31,6 +31,7 @@
 ## Layers, lowest first — import a submodule directly if you only need part of it:
 ##
 ## * `nimtui/ansi` — escape sequences, visible-width helpers
+## * `nimtui/color` — colour values, mixing, gradients
 ## * `nimtui/messages` — the `Msg` hierarchy and `Cmd` constructors
 ## * `nimtui/input` — pure byte-stream to `Msg` decoding
 ## * `nimtui/style` — SGR colours and attributes
@@ -40,9 +41,22 @@
 ##
 ## Building a view out of blocks of text, independent of the runtime:
 ##
-## * `nimtui/layout` — padding, joining, bordered panels
-## * `nimtui/widgets` — bars, charts, spinners, key hints
+## * `nimtui/spans` — one line carrying several styles
+## * `nimtui/layout` — padding, joining, wrapping, bordered panels, overlays
+## * `nimtui/widgets` — bars, charts, spinners, tabs, status bars, key hints
+## * `nimtui/table` — columns that line up
+## * `nimtui/theme` — a palette and the styles derived from it
+##
+## Components, which hold state and consume keys:
+##
+## * `nimtui/viewport` — a scrolling window over a list of items
+## * `nimtui/listview` — a list with a highlighted row
+## * `nimtui/textarea` — a read-only scrolling pane over wrapped text
+## * `nimtui/textinput` — a single-line editable field
 
-import nimtui/[ansi, messages, input, style, renderer, tty, program,
-               layout, widgets]
-export ansi, messages, input, style, renderer, tty, program, layout, widgets
+import nimtui/[ansi, color, messages, input, style, renderer, tty, program,
+               spans, layout, widgets, table, theme,
+               viewport, listview, textarea, textinput]
+export ansi, color, messages, input, style, renderer, tty, program
+export spans, layout, widgets, table, theme
+export viewport, listview, textarea, textinput

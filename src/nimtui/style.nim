@@ -9,31 +9,20 @@
 ## ```
 
 import std/strutils
-import ./ansi
+import ./[ansi, color]
+# `Color` and its arithmetic live one layer down, in a module with no
+# dependencies at all, so gradients can be computed without dragging in
+# escape-sequence assembly. Re-exported for the same reason `ansi` re-exports
+# `width`: a caller reaching for `Style` always needs `Color` too.
+export color
 
 type
-  ColorKind* = enum
-    ckDefault, ckAnsi, ckRgb
-
-  Color* = object
-    kind*: ColorKind
-    n*: int                  ## palette index for ckAnsi (0..255)
-    r*, g*, b*: int          ## components for ckRgb
-
   Attr* = enum
     aBold, aFaint, aItalic, aUnderline, aBlink, aReverse, aStrike
 
   Style* = object
     fgc*, bgc*: Color
     attrs*: set[Attr]
-
-proc ansiColor*(n: int): Color =
-  ## 256-colour palette index. 0-7 basic, 8-15 bright, 16-231 cube, 232-255 grey.
-  Color(kind: ckAnsi, n: n)
-
-proc rgb*(r, g, b: int): Color =
-  ## 24-bit colour. Terminals without truecolor support will approximate it.
-  Color(kind: ckRgb, r: r, g: g, b: b)
 
 proc fg*(s: Style, c: Color): Style =
   result = s
@@ -57,6 +46,19 @@ proc strike*(s: Style): Style = s.with(aStrike)
 
 proc isEmpty*(s: Style): bool =
   s.attrs.card == 0 and s.fgc.kind == ckDefault and s.bgc.kind == ckDefault
+
+proc merge*(base, over: Style): Style =
+  ## `base` with whatever `over` actually specifies laid on top. Attributes
+  ## union; a colour in `over` wins, but `ckDefault` means "not specified" and
+  ## leaves `base`'s colour alone.
+  ##
+  ## This is what layering styles needs: a zebra-striped table row supplies a
+  ## background and nothing else, and must not wipe out the foreground its
+  ## column asked for.
+  result = base
+  if over.fgc.kind != ckDefault: result.fgc = over.fgc
+  if over.bgc.kind != ckDefault: result.bgc = over.bgc
+  result.attrs = base.attrs + over.attrs
 
 proc sgr*(s: Style): string =
   ## The escape sequence that turns `s` on, or "" for an empty style.

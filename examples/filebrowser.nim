@@ -13,7 +13,6 @@
 
 import std/[os, strutils, algorithm, times, math]
 import nimtui
-import lib/viewport
 
 const PreviewLines = 200
 

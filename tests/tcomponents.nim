@@ -1,11 +1,11 @@
 import std/[unittest, unicode, sequtils]
 import nimtui
-import lib/[textinput, viewport]
+import nimtui/[textinput, viewport]
 
-## The helpers still under examples/lib are not part of the library's API, but
-## they carry fiddly rune and column arithmetic the examples depend on, so they
-## are tested here. Layout and widgets moved into the library: see tests/tlayout
-## and tests/twidgets.
+## The stateful components: `TextInput` and `Viewport`, which were staged under
+## examples/lib until the component API settled, and are now library modules.
+## `TextArea` and `ListView` are built on `Viewport` and tested in
+## tests/ttextarea and tests/tlistview.
 
 proc press(ti: var TextInput, keys: varargs[string]) =
   for k in keys:

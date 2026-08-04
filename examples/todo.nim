@@ -12,7 +12,6 @@
 
 import std/[strutils, sequtils, unicode]
 import nimtui
-import lib/[textinput, viewport]
 
 type
   Mode = enum

@@ -1,4 +1,4 @@
-import std/[unittest, unicode]
+import std/[unittest, unicode, strutils]
 import nimtui/ansi
 
 const
@@ -146,3 +146,51 @@ suite "padVisible":
 
   test "never truncates":
     check padVisible("abcdef", 3) == "abcdef"
+
+suite "sliceVisible":
+  test "a slice from zero is a prefix":
+    for w in 1 .. 10:
+      check sliceVisible("abcdefgh", 0, w) == truncateVisible("abcdefgh", w)
+
+  test "the window starts where it says":
+    check sliceVisible("abcdefgh", 3, 3) == "def"
+    check sliceVisible("abcdefgh", 6, 5) == "gh"     # runs out, like truncate
+    check sliceVisible("abcdefgh", 20, 5) == ""
+
+  test "a non-positive width or negative start yields nothing":
+    check sliceVisible("abc", 0, 0) == ""
+    check sliceVisible("abc", -1, 3) == ""
+
+  test "the result is exactly the width asked for while the string lasts":
+    let s = "日本語abcか"
+    for start in 0 .. 8:
+      for w in 1 .. 4:
+        let piece = sliceVisible(s, start, w)
+        if start + w <= displayWidth(s):
+          check displayWidth(piece) == w
+
+  test "a wide rune straddling either edge becomes a space":
+    # Half a glyph cannot be drawn, so the cell is blanked and the width stays
+    # exact rather than coming up one short.
+    check sliceVisible("日本語", 0, 3) == "日 "
+    check sliceVisible("日本語", 1, 4) == " 本 "
+    # Columns 1 and 2 are the right half of 日 and the left half of 本, so
+    # neither glyph can be drawn and both cells are blank. Two spaces is the
+    # correct answer here, not " 本" — 本 needs two columns and only one is left.
+    check sliceVisible("日本語", 1, 2) == "  "
+    # A window landing on the boundary keeps the glyph whole.
+    check sliceVisible("日本語", 2, 2) == "本"
+
+  test "escapes before the window are carried to the front of the slice":
+    # A window into the middle of a coloured run begins with no colour of its
+    # own; dropping the escapes that preceded it renders the tail unstyled.
+    let s = "\e[31mabcdef\e[0m"
+    let piece = sliceVisible(s, 2, 2)
+    check piece.stripAnsi == "cd"
+    check piece.startsWith("\e[31m")
+    check displayWidth(piece) == 2
+
+  test "escapes inside and after the window are kept":
+    let s = "ab\e[31mcd\e[0mef"
+    check sliceVisible(s, 0, 6).stripAnsi == "abcdef"
+    check sliceVisible(s, 0, 6).count("\e[") == 2

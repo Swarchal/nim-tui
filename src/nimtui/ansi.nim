@@ -146,6 +146,64 @@ proc truncateVisible*(s: string, width: int): string =
           result.add ' '
           inc w
 
+proc sliceVisible*(s: string, start, width: int): string =
+  ## The `width` visible columns of `s` starting at column `start`.
+  ##
+  ## `truncateVisible` takes a prefix; this takes a window, which is what
+  ## drawing something *over* a line needs — the part of the line to the right
+  ## of the overlay. Shorter than `width` if `s` runs out first, exactly like
+  ## `truncateVisible` on a short string.
+  ##
+  ## Escape sequences from *before* `start` are kept and emitted at the front of
+  ## the result. That is the whole difficulty of slicing styled text: a window
+  ## into the middle of a coloured run begins with no colour of its own, so
+  ## dropping the escapes that preceded it renders the tail of the line
+  ## unstyled. Carrying them forward restores the state the terminal would have
+  ## been in at that column.
+  ##
+  ## A double-width rune straddling either edge becomes a space, so the result
+  ## is exactly `width` columns whenever `s` extends that far — the same
+  ## guarantee `truncateVisible` makes, and for the same reason.
+  if width <= 0 or start < 0: return ""
+  result = newStringOfCap(s.len)
+  var
+    i = 0
+    col = 0                       # visible column of the rune about to be read
+    shown = 0                     # columns emitted so far
+    stopped = false
+  while i < s.len:
+    let n = escapeLen(s, i)
+    if n > 0:
+      result.addSlice s, i, i + n - 1
+      i += n
+      continue
+    let b = i
+    var r: Rune
+    fastRuneAt(s, i, r, true)
+    if stopped: continue          # keep scanning, but only for escapes
+    let
+      rw = runeWidth(r)
+      cellStart = col
+    col += rw
+    if col <= start and rw > 0:
+      continue                    # entirely to the left of the window
+    if cellStart < start:
+      # Straddles the left edge: only its right-hand cells are in view, and half
+      # a glyph cannot be drawn, so blank them.
+      for _ in 0 ..< min(col - start, width - shown):
+        result.add ' '
+        inc shown
+    elif shown + rw <= width:
+      result.addSlice s, b, i - 1
+      shown += rw
+    else:
+      # Straddles the right edge; blank to the boundary so the width is exact.
+      while shown < width:
+        result.add ' '
+        inc shown
+      stopped = true
+    if shown >= width: stopped = true
+
 proc padVisible*(s: string, width: int): string =
   ## `s` padded with spaces to `width` visible columns (never truncated).
   let w = displayWidth(s)

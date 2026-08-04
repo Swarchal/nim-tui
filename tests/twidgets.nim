@@ -48,3 +48,89 @@ suite "widgets":
     let rows = barChart(@[100.0, 10.0], 2, 4, lo = 0.0, hi = 100.0)
     check rows[0][0 ..< 3] != "  "        # top row filled for the 100 column
     check rows[0].endsWith(" ")           # but not for the 10 column
+
+suite "gradient widgets":
+  test "a gradient gauge is exactly as wide as a plain one":
+    for w in [1, 5, 20, 40]:
+      for f in [0.0, 0.01, 0.25, 0.5, 0.73, 0.999, 1.0]:
+        check displayWidth(gauge(f, w, HeatGradient)) == w
+        check displayWidth(gauge(f, w, HeatGradient)) == displayWidth(gauge(f, w))
+
+  test "the gauge ramp is laid over the whole bar, not the filled part":
+    # Otherwise every cell recolours as the bar grows, which reads as flashing,
+    # and 100% of a heat gradient looks the same as 10% of it.
+    let g = gradient(hex"#000000", hex"#ffffff")
+    let short = gauge(0.1, 20, g)
+    let long = gauge(0.9, 20, g)
+    check short.stripAnsi[0] == long.stripAnsi[0]
+    check "38;2;0;0;0" in short
+    check "38;2;0;0;0" in long
+
+  test "an empty and a full gauge are still the right width":
+    check displayWidth(gauge(0.0, 10, CoolGradient)) == 10
+    check displayWidth(gauge(1.0, 10, CoolGradient)) == 10
+    check gauge(0.5, 0, CoolGradient) == ""
+
+  test "a coloured sparkline matches the plain one glyph for glyph":
+    let values = @[1.0, 5.0, 3.0, 9.0, 2.0, 7.0, 4.0]
+    for w in [3, 7, 20]:
+      check sparkline(values, w, CoolGradient).stripAnsi ==
+            sparkline(values, w)
+      check displayWidth(sparkline(values, w, CoolGradient)) == w
+
+  test "a coloured barChart matches the plain one cell for cell":
+    let values = @[1.0, 4.0, 9.0, 3.0, 7.0]
+    let plain = barChart(values, 12, 5)
+    let painted = barChart(values, 12, 5, HeatGradient)
+    check painted.len == plain.len
+    for i in 0 ..< plain.len:
+      check painted[i].stripAnsi == plain[i]
+      check displayWidth(painted[i]) == 12
+
+  test "a coloured barChart handles the degenerate inputs the plain one does":
+    check barChart(@[], 10, 4, HeatGradient).len == 4
+    check barChart(@[5.0], 10, 4, HeatGradient).len == 4
+    check barChart(@[5.0, 5.0], 10, 0, HeatGradient).len == 0
+    for row in barChart(@[5.0, 5.0, 5.0], 10, 4, HeatGradient):
+      check displayWidth(row) == 10
+
+suite "tab bar":
+  test "a width is honoured exactly":
+    for w in [5, 10, 24, 60]:
+      check displayWidth(tabBar(["files", "search", "help"], 1, w)) == w
+
+  test "the active tab is the styled one":
+    let bar = tabBar(["a", "b", "c"], 1, activeStyle = Style().fg(hex"#00e5ff"),
+                     inactiveStyle = Style())
+    check "0;229;255" in bar
+    check bar.stripAnsi == " a │ b │ c "
+
+  test "an out-of-range index simply styles nothing":
+    check tabBar(["a", "b"], -1).stripAnsi == " a │ b "
+    check tabBar(["a", "b"], 99).stripAnsi == " a │ b "
+
+  test "no tabs is an empty strip, not a crash":
+    check tabBar([], 0) == ""
+    check displayWidth(tabBar([], 0, 20)) == 20
+
+suite "status bar":
+  test "the bar is exactly the requested width at any size":
+    for w in 1 .. 60:
+      check displayWidth(statusBar(" NORMAL ", "~/code/nim-tui", " 12:04 ", w)) == w
+
+  test "the segments sit where they belong when there is room":
+    let bar = statusBar("L", "C", "R", 11)
+    check bar == "L    C    R"
+
+  test "the centre is dropped first, then the right is cut":
+    check statusBar("LEFT", "CENTRE", "RIGHT", 9).stripAnsi == "LEFTRIGHT"
+    check displayWidth(statusBar("LEFT", "CENTRE", "RIGHT", 6)) == 6
+    check statusBar("LEFT", "CENTRE", "RIGHT", 4).stripAnsi == "LEFT"
+
+  test "double-width and styled segments measure correctly":
+    for w in [20, 40]:
+      check displayWidth(statusBar("日本語", "",
+                                   Style().bold().render("ok"), w)) == w
+
+  test "a zero width is empty rather than negative":
+    check statusBar("a", "b", "c", 0) == ""
