@@ -1,0 +1,221 @@
+## A live metrics dashboard.
+##
+## What this example is really about: several independent timers at different
+## rates. Each one is a distinct message type that re-issues its own `after`
+## when it fires, so the loop carries three concurrent schedules — a 90ms
+## spinner, a 400ms metric sample and a 1.2s log line — without threads and
+## without any of them blocking the others. The batched `initCmd` starts all
+## three at once.
+##
+## Also shows: a layout that reflows from a 2x2 grid to a single column when the
+## terminal is narrow, and history kept in the model so `view` stays pure.
+##
+##   nim c -r --path:src examples/dashboard.nim
+
+import std/[random, math, strutils, times, strformat]
+import nimtui
+
+const
+  SpinInterval = initDuration(milliseconds = 90)
+  SampleInterval = initDuration(milliseconds = 400)
+  LogInterval = initDuration(milliseconds = 1200)
+  History = 120
+  LogLines = 40
+
+type
+  SpinTickMsg = ref object of Msg
+  SampleTickMsg = ref object of Msg
+  LogTickMsg = ref object of Msg
+
+  Series = object
+    label: string
+    values: seq[float]
+    unit: string
+    colour: Color
+
+  LogEntry = object
+    level: string
+    text: string
+    elapsed: Duration
+
+  Model = object
+    series: seq[Series]
+    logs: seq[LogEntry]
+    frame: int
+    samples: int
+    paused: bool
+    started: MonoTime
+    width, height: int
+
+# --- fake data ----------------------------------------------------------------
+
+var rng = initRand(0x5eed)
+
+proc nextValue(s: Series): float =
+  ## Random walk with mean reversion, so the sparklines look like metrics
+  ## rather than noise.
+  let last = if s.values.len == 0: 50.0 else: s.values[^1]
+  let drift = (50.0 - last) * 0.08
+  clamp(last + drift + rng.gauss(0.0, 7.0), 0.0, 100.0)
+
+const LogTemplates = [
+  ("info", "GET /api/items 200"),
+  ("info", "cache hit ratio 0.94"),
+  ("warn", "slow query 812ms"),
+  ("info", "worker heartbeat ok"),
+  ("error", "upstream timeout, retrying"),
+  ("info", "flushed 240 events"),
+  ("warn", "queue depth 1204"),
+]
+
+# --- update -------------------------------------------------------------------
+
+proc spin(): Cmd = after(SpinInterval, SpinTickMsg())
+proc sample(): Cmd = after(SampleInterval, SampleTickMsg())
+proc logTick(): Cmd = after(LogInterval, LogTickMsg())
+
+proc update(m: Model, msg: Msg): (Model, Cmd) =
+  result = (m, nil)
+
+  if msg of SpinTickMsg:
+    result[0].frame.inc
+    result[1] = spin()                      # each timer re-arms itself
+
+  elif msg of SampleTickMsg:
+    if not m.paused:
+      for i in 0 .. result[0].series.high:
+        result[0].series[i].values.add result[0].series[i].nextValue
+        if result[0].series[i].values.len > History:
+          result[0].series[i].values.delete 0
+      result[0].samples.inc
+    result[1] = sample()
+
+  elif msg of LogTickMsg:
+    if not m.paused:
+      let (level, text) = LogTemplates[rng.rand(LogTemplates.high)]
+      result[0].logs.add LogEntry(level: level, text: text,
+                                  elapsed: getMonoTime() - m.started)
+      if result[0].logs.len > LogLines: result[0].logs.delete 0
+    result[1] = logTick()
+
+  elif msg of WindowSizeMsg:
+    result[0].width = WindowSizeMsg(msg).width
+    result[0].height = WindowSizeMsg(msg).height
+
+  elif msg of KeyMsg:
+    case $KeyMsg(msg)
+    of "q", "ctrl+c": result[1] = quitCmd()
+    of "space", "p": result[0].paused = not m.paused
+    of "r":
+      for i in 0 .. result[0].series.high:
+        result[0].series[i].values.setLen 0
+      result[0].logs.setLen 0
+      result[0].samples = 0
+      result[0].started = getMonoTime()
+    else: discard
+
+# --- view ---------------------------------------------------------------------
+
+const
+  Accent = rgb(120, 220, 200)
+  WarnColour = rgb(250, 200, 90)
+  ErrorColour = rgb(255, 110, 110)
+
+proc levelStyle(level: string): Style =
+  case level
+  of "warn": Style().fg(WarnColour)
+  of "error": Style().fg(ErrorColour).bold()
+  else: Style().faint()
+
+proc seriesPane(s: Series, width, height: int): string =
+  let inner = width - 4
+  let cur = if s.values.len == 0: 0.0 else: s.values[^1]
+  var lo = 100.0
+  var hi = 0.0
+  for v in s.values:
+    lo = min(lo, v)
+    hi = max(hi, v)
+  if s.values.len == 0:
+    lo = 0.0
+    hi = 0.0
+
+  let big = Style().bold().fg(s.colour).render(&"{cur:5.1f}") &
+            Style().faint().render(s.unit)
+  # `{x:.0f}` leaves a trailing point in Nim, hence the explicit int.
+  let range = Style().faint().render(&"min {lo.round.int}  max {hi.round.int}")
+  var rows = @["", "  " & big & "   " & range, ""]
+  # A fixed 0-100 scale keeps the chart comparable between panels and stops it
+  # rescaling every sample.
+  for line in barChart(s.values, inner, max(height - 2 - rows.len - 1, 1),
+                       lo = 0.0, hi = 100.0):
+    rows.add "  " & Style().fg(s.colour).render(line)
+  rows.add ""
+  renderBox(rows.join("\n"), width, height, title = s.label,
+            borderStyle = Style().faint(), titleStyle = Style().fg(s.colour))
+
+proc gaugePane(m: Model, width, height: int): string =
+  let inner = width - 4
+  var rows = @[""]
+  for s in m.series:
+    let cur = if s.values.len == 0: 0.0 else: s.values[^1]
+    let label = padVisible(s.label, 10)
+    let barWidth = max(inner - 10 - 8, 4)
+    rows.add "  " & Style().faint().render(label) &
+             Style().fg(s.colour).render(gauge(cur / 100.0, barWidth)) &
+             &" {cur:5.1f}"
+  renderBox(rows.join("\n"), width, height, title = "current",
+            borderStyle = Style().faint(), titleStyle = Style().fg(Accent))
+
+proc logPane(m: Model, width, height: int): string =
+  let inner = width - 4
+  var rows: seq[string]
+  let visible = max(height - 2, 1)
+  let start = max(m.logs.len - visible, 0)
+  for i in start ..< m.logs.len:
+    let e = m.logs[i]
+    let stamp = Style().faint().render(&"{e.elapsed.inMilliseconds/1000:6.1f}s ")
+    let level = e.level.levelStyle.render(padVisible(e.level, 6))
+    rows.add "  " & truncateVisible(stamp & level & e.text, inner)
+  renderBox(rows.join("\n"), width, height, title = "events",
+            borderStyle = Style().faint(), titleStyle = Style().fg(Accent))
+
+proc view(m: Model): string =
+  if m.width == 0: return "loading…"
+  let uptime = (getMonoTime() - m.started).inMilliseconds.float / 1000.0
+  let state = if m.paused: Style().fg(WarnColour).render("paused")
+              else: Style().fg(Accent).render(spinner(m.frame) & " live")
+  let header = Style().bold().render("  nimtui dashboard  ") & state &
+    Style().faint().render(&"   {m.samples} samples · up {uptime:.1f}s · " &
+                           &"{m.width}x{m.height}")
+  let footer = " " & hints({"space": "pause", "r": "reset", "q": "quit"})
+  let bodyHeight = max(m.height - 3, 6)
+
+  let body =
+    if m.width < 76:
+      # Narrow: single column, only the first series keeps its chart.
+      let top = max(bodyHeight - 8, 5)
+      joinVertical(m.series[0].seriesPane(m.width, top),
+                   m.gaugePane(m.width, bodyHeight - top))
+    else:
+      let left = m.width div 2
+      let right = m.width - left
+      let topHeight = max(bodyHeight * 3 div 5, 6)
+      joinVertical(
+        joinHorizontal([m.series[0].seriesPane(left, topHeight),
+                        m.series[1].seriesPane(right, topHeight)]),
+        joinHorizontal([m.gaugePane(left, bodyHeight - topHeight),
+                        m.logPane(right, bodyHeight - topHeight)]))
+
+  joinVertical(header, body, footer)
+
+when isMainModule:
+  var model = Model(started: getMonoTime())
+  model.series = @[
+    Series(label: "requests/s", unit: "/s", colour: rgb(120, 220, 200)),
+    Series(label: "latency", unit: "ms", colour: rgb(200, 160, 255)),
+    Series(label: "cpu", unit: "%", colour: rgb(250, 190, 100)),
+    Series(label: "memory", unit: "%", colour: rgb(140, 200, 255)),
+  ]
+  discard newProgram(model, update, view,
+                     options = {poAltScreen, poHideCursor},
+                     initCmd = batch(spin(), sample(), logTick())).run()

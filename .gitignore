@@ -1,0 +1,8 @@
+nimcache/
+htmldocs/
+bin/
+*.exe
+# Nim leaves the compiled binary next to a test when built directly
+tests/t[a-z]*
+!tests/t[a-z]*.nim
+!tests/*.nims

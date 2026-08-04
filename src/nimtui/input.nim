@@ -1,0 +1,209 @@
+## Pure byte-stream to `Msg` decoding.
+##
+## The parser never reads from a file descriptor: callers hand it whatever bytes
+## they have and get back the messages plus how many bytes were consumed. A
+## partially received sequence is simply not consumed, so the caller keeps it
+## and retries once more bytes arrive. This is what makes key handling testable
+## without a terminal.
+
+import std/unicode
+import ./[ansi, messages]
+
+proc decodeMods*(param: int): set[Modifier] =
+  ## Decode an xterm modifier parameter (1 = none, 2 = shift, 5 = ctrl, ...).
+  let m = param - 1
+  if (m and 1) != 0: result.incl mShift
+  if (m and 2) != 0: result.incl mAlt
+  if (m and 4) != 0: result.incl mCtrl
+
+proc utf8SeqLen(b: char): int =
+  ## Expected byte length of a UTF-8 sequence from its leading byte, 0 if `b`
+  ## cannot start one.
+  let x = b.ord
+  if x < 0x80: 1
+  elif (x shr 5) == 0b110: 2
+  elif (x shr 4) == 0b1110: 3
+  elif (x shr 3) == 0b11110: 4
+  else: 0
+
+proc parseCsi(buf: string, start: int): tuple[msg: Msg, len: int] =
+  ## Parse a CSI body. `start` indexes the byte after `ESC [`. The returned
+  ## length is relative to `start`; 0 means "incomplete, wait for more bytes".
+  var i = start
+  var private = '\0'
+  if i < buf.len and buf[i] in {'<', '?', '>', '='}:
+    private = buf[i]
+    inc i
+
+  var params: seq[int]
+  var cur = -1
+  while i < buf.len and (buf[i] in {'0' .. '9', ';', ':'}):
+    if buf[i] in {'0' .. '9'}:
+      if cur < 0: cur = 0
+      cur = cur * 10 + (buf[i].ord - '0'.ord)
+    else:
+      params.add(if cur < 0: 0 else: cur)
+      cur = -1
+    inc i
+  if cur >= 0: params.add cur
+
+  if i >= buf.len: return (nil, 0)
+  let final = buf[i]
+  let used = i - start + 1
+  if not isFinalByte(final): return (nil, used)   # malformed: drop it
+
+  proc param(n: int, dflt = 0): int =
+    if n < params.len: params[n] else: dflt
+
+  # SGR mouse reporting: ESC [ < button ; col ; row (M|m)
+  if private == '<' and final in {'M', 'm'}:
+    let b = param(0)
+    var msg = MouseMsg(x: param(1, 1), y: param(2, 1))
+    if (b and 4) != 0: msg.mods.incl mShift
+    if (b and 8) != 0: msg.mods.incl mAlt
+    if (b and 16) != 0: msg.mods.incl mCtrl
+    if (b and 64) != 0:
+      msg.action = maPress
+      msg.button = if (b and 3) == 0: mbWheelUp else: mbWheelDown
+    else:
+      msg.action =
+        if final == 'm': maRelease
+        elif (b and 32) != 0: maMotion
+        else: maPress
+      msg.button = case b and 3
+                   of 0: mbLeft
+                   of 1: mbMiddle
+                   of 2: mbRight
+                   else: mbNone
+    return (msg, used)
+
+  # X10 mouse reporting is not decoded; swallow its three payload bytes so the
+  # stream stays in sync.
+  if private == '\0' and final == 'M':
+    if start + used + 3 > buf.len: return (nil, 0)
+    return (nil, used + 3)
+
+  let mods = decodeMods(param(1, 1))
+
+  template key(k: Key): tuple[msg: Msg, len: int] =
+    (Msg(KeyMsg(key: k, mods: mods)), used)
+
+  case final
+  of 'A': return key(kUp)
+  of 'B': return key(kDown)
+  of 'C': return key(kRight)
+  of 'D': return key(kLeft)
+  of 'H': return key(kHome)
+  of 'F': return key(kEnd)
+  of 'Z': return (Msg(KeyMsg(key: kShiftTab, mods: {mShift})), used)
+  of 'P': return key(kF1)                       # some terminals in CSI form
+  of 'Q': return key(kF2)
+  of 'S': return key(kF4)
+  of '~':
+    let k = case param(0)
+            of 1, 7: kHome
+            of 2: kInsert
+            of 3: kDelete
+            of 4, 8: kEnd
+            of 5: kPgUp
+            of 6: kPgDown
+            of 11: kF1
+            of 12: kF2
+            of 13: kF3
+            of 14: kF4
+            of 15: kF5
+            of 17: kF6
+            of 18: kF7
+            of 19: kF8
+            of 20: kF9
+            of 21: kF10
+            of 23: kF11
+            of 24: kF12
+            else: kNone
+    if k == kNone: return (nil, used)
+    # For `ESC [ 5 ; 3 ~` the modifier is the *second* parameter.
+    return (Msg(KeyMsg(key: k, mods: decodeMods(param(1, 1)))), used)
+  else:
+    return (nil, used)                          # unrecognised but well-formed
+
+proc parseOne(buf: string, i: int, flushEsc: bool): tuple[msg: Msg, len: int] =
+  ## Decode the single event starting at `buf[i]`.
+  ##
+  ## `len == 0` means the sequence is incomplete and nothing was consumed.
+  ## A nil `msg` with `len > 0` means the bytes were recognised but carry no
+  ## event worth reporting.
+  let b = buf[i]
+
+  # An escape sequence that runs off the end of the buffer. Held while more bytes
+  # may still arrive; on a flush — the caller's read timed out, so the rest is
+  # never coming — report the ESC alone and consume only that byte, leaving what
+  # follows to be decoded as ordinary input. Without the flush the partial
+  # sequence is held forever and then absorbs whatever key arrives next.
+  template incomplete(): tuple[msg: Msg, len: int] =
+    if flushEsc: (Msg(KeyMsg(key: kEsc)), 1) else: (nil, 0)
+
+  if b == Esc:
+    if i + 1 >= buf.len:
+      # A lone ESC is ambiguous: it may be the start of a sequence still in
+      # flight. Only the caller knows whether the read timed out.
+      return incomplete()
+    case buf[i + 1]
+    of '[':
+      let (m, n) = parseCsi(buf, i + 2)
+      return if n == 0: incomplete() else: (m, n + 2)
+    of 'O':                                     # SS3: application cursor/function keys
+      if i + 2 >= buf.len: return incomplete()
+      let k = case buf[i + 2]
+              of 'P': kF1
+              of 'Q': kF2
+              of 'R': kF3
+              of 'S': kF4
+              of 'A': kUp
+              of 'B': kDown
+              of 'C': kRight
+              of 'D': kLeft
+              of 'H': kHome
+              of 'F': kEnd
+              else: kNone
+      return if k == kNone: (nil, 3) else: (Msg(KeyMsg(key: k)), 3)
+    of Esc:
+      return (Msg(KeyMsg(key: kEsc)), 1)
+    else:
+      # ESC + key is how terminals report alt-modified keys.
+      let (m, n) = parseOne(buf, i + 1, flushEsc)
+      if n == 0: return incomplete()
+      if m != nil and m of KeyMsg: KeyMsg(m).mods.incl mAlt
+      return (m, n + 1)
+
+  case b
+  of '\r', '\n': return (Msg(KeyMsg(key: kEnter)), 1)
+  of '\t': return (Msg(KeyMsg(key: kTab)), 1)
+  of '\b', '\x7f': return (Msg(KeyMsg(key: kBackspace)), 1)
+  of ' ': return (Msg(KeyMsg(key: kSpace, rune: Rune(' '))), 1)
+  of '\0': return (Msg(KeyMsg(key: kSpace, mods: {mCtrl})), 1)
+  of '\x01' .. '\x07', '\x0b', '\x0c', '\x0e' .. '\x1a':
+    # Control characters map back onto their letter: 0x03 -> ctrl+c.
+    return (Msg(KeyMsg(key: kRune, rune: Rune(b.ord + 96), mods: {mCtrl})), 1)
+  of '\x1c' .. '\x1f':
+    return (Msg(KeyMsg(key: kRune, rune: Rune(b.ord + 64), mods: {mCtrl})), 1)
+  else:
+    let n = utf8SeqLen(b)
+    if n == 0: return (nil, 1)                  # invalid leading byte: skip
+    if i + n > buf.len: return (nil, 0)         # rune split across reads
+    var j = i
+    var r: Rune
+    fastRuneAt(buf, j, r, true)
+    return (Msg(KeyMsg(key: kRune, rune: r)), j - i)
+
+proc parseInput*(buf: string, flushEsc = false): tuple[msgs: seq[Msg], consumed: int] =
+  ## Decode as many events as `buf` fully contains.
+  ##
+  ## Pass `flushEsc = true` when the read timed out, so that a trailing lone
+  ## `ESC` is reported as the Escape key instead of being held indefinitely.
+  var i = 0
+  while i < buf.len:
+    let (m, n) = parseOne(buf, i, flushEsc)
+    if n == 0: break
+    if m != nil: result.msgs.add m
+    i += n
+  result.consumed = i
