@@ -178,6 +178,95 @@ suite "mouse":
     check r.msgs.len == 0
     check r.consumed == 6
 
+suite "string sequences":
+  # The bug this whole suite is about: with no branch for `ESC ]`, an OSC reply
+  # fell through to the alt-modified path and arrived as alt+`]` followed by its
+  # payload typed one rune at a time. A program that never asks the terminal
+  # anything is not exempt — anything else sharing the terminal can ask, and the
+  # answer comes back here.
+  proc replies(s: string, flushEsc = false): seq[string] =
+    let (msgs, _) = parseInput(s, flushEsc)
+    for m in msgs:
+      if m of OscMsg: result.add OscMsg(m).payload
+
+  proc typed(s: string, flushEsc = false): seq[string] =
+    ## The keys only. Not the `keys` helper above, which requires every message
+    ## to be a key — here the point is that an OSC reply is not one.
+    let (msgs, _) = parseInput(s, flushEsc)
+    for m in msgs:
+      if m of KeyMsg: result.add $KeyMsg(m)
+
+  test "an OSC reply is one message and no keys":
+    let bg = "\e]11;rgb:1e1e/1e1e/1e1e\e\\"
+    let (msgs, consumed) = parseInput(bg)
+    check consumed == bg.len
+    require msgs.len == 1
+    require msgs[0] of OscMsg
+    check OscMsg(msgs[0]).payload == "11;rgb:1e1e/1e1e/1e1e"
+    # The half that matters. Anything at all in a text field is the failure.
+    check typed(bg).len == 0
+
+  test "BEL terminates it too":
+    check replies("\e]11;rgb:00/00/00\a") == @["11;rgb:00/00/00"]
+
+  test "the terminator is not part of the payload":
+    check replies("\e]0;a title\e\\") == @["0;a title"]
+
+  test "a reply among keys leaves the keys alone and in order":
+    let (msgs, _) = parseInput("a\e]11;rgb:ff/ff/ff\ab")
+    check msgs.len == 3
+    check typed("a\e]11;rgb:ff/ff/ff\ab") == @["a", "b"]
+    check replies("a\e]11;rgb:ff/ff/ff\ab") == @["11;rgb:ff/ff/ff"]
+
+  test "DCS, APC, PM and SOS are consumed but not reported":
+    # Nothing here queries with them, so there is nothing to report — but the
+    # bytes must still go, which is the same contract as an unrecognised CSI.
+    for intro in ["P", "_", "^", "X"]:
+      let s = "\e" & intro & "payload;1;2\e\\"
+      let (msgs, consumed) = parseInput(s)
+      checkpoint "ESC " & intro
+      check msgs.len == 0
+      check consumed == s.len
+
+  test "an unterminated one is held, not typed":
+    # Held while more bytes may still arrive: the payload can straddle two reads.
+    let (msgs, consumed) = parseInput("\e]11;rgb:1e1e/1e")
+    check msgs.len == 0
+    check consumed == 0
+
+  test "and is swallowed rather than typed once the read has timed out":
+    # The deliberate departure from `flushEsc`'s usual rule. A truncated CSI
+    # reports `ESC` and leaves the rest to decode as keys, because those bytes
+    # might be real input; `11;rgb:1e` is not, and putting it in a text field is
+    # the bug rather than a lesser one.
+    let s = "\e]11;rgb:1e"
+    let (msgs, consumed) = parseInput(s, flushEsc = true)
+    check msgs.len == 0
+    check consumed == s.len
+
+  test "but a bare introducer on a timeout is still alt+that key":
+    # Two bytes and then silence for the whole escape timeout is far more likely
+    # someone pressing alt+] than a reply that stalled immediately.
+    check typed("\e]", flushEsc = true) == @["alt+]"]
+    check typed("\eP", flushEsc = true) == @["alt+P"]
+
+  test "an escape inside one does not swallow the sequence after it":
+    # An ESC that is not ST ends the string sequence where it stands, so a real
+    # sequence starting inside a malformed one is still decoded.
+    check typed("\e]11;rgb:\e[A") == @["up"]
+
+  test "a reply split across two reads decodes once whole":
+    # What the caller's retry loop does: keep the unconsumed bytes, ask again.
+    var buf = "\e]11;rgb:2e34"
+    var (msgs, consumed) = parseInput(buf)
+    check msgs.len == 0
+    check consumed == 0
+    buf.add "/3436/4144\e\\"
+    (msgs, consumed) = parseInput(buf)
+    require msgs.len == 1
+    check OscMsg(msgs[0]).payload == "11;rgb:2e34/3436/4144"
+    check consumed == buf.len
+
 suite "streams" :
   test "a burst of pasted text decodes in order":
     check keys("hi\r\e[A") == @["h", "i", "enter", "up"]

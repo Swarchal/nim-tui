@@ -134,3 +134,28 @@ suite "status bar":
 
   test "a zero width is empty rather than negative":
     check statusBar("a", "b", "c", 0) == ""
+
+suite "a status bar is one bar":
+  ## `statusBar` measures and concatenates raw strings instead of building a
+  ## `Spans`, so it does not inherit that module's guarantee and needs its own.
+  ## It is also the widget most likely to be handed text from elsewhere: a path,
+  ## a branch name, the message off an exception.
+
+  test "a newline in any segment leaves it one line, exactly as wide":
+    for w in [20, 40, 80]:
+      for seg in 0 .. 2:
+        var parts = ["left", "centre", "right"]
+        parts[seg] = "two\nlines"
+        let bar = statusBar(parts[0], parts[1], parts[2], w)
+        checkpoint "width " & $w & " segment " & $seg & ": " & bar
+        check bar.split('\n').len == 1
+        check displayWidth(bar) == w
+
+  test "the text is still there, on the one line":
+    let bar = statusBar("a\nb", "", "", 20)
+    check bar.startsWith("a b")
+
+  test "tabs do not silently widen it past the width either":
+    # A tab is zero columns to `displayWidth` and eight to the terminal, so an
+    # unflattened one overflows the bar rather than merely looking wrong.
+    check displayWidth(statusBar("a\tb", "c", "d", 30)) == 30

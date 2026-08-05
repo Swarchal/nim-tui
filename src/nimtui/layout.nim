@@ -418,7 +418,10 @@ proc borderRow(p: Panel, left, right, label: string, labelStyle: Style,
   if label.len == 0 or inner <= 4:
     return p.borderStyle.render(left & h.repeat(inner) & right)
   let
-    t = " " & truncateVisible(label, inner - 4) & " "
+    # Flattened before it is measured: a title or footer is often a filename or a
+    # position read off something else, and a newline in one would put a line
+    # break inside a border row — a box one row taller than the height asked for.
+    t = " " & truncateVisible(oneLine(label), inner - 4) & " "
     tw = displayWidth(t)
     lead = case align
            of aLeft: 1

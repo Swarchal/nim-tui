@@ -197,16 +197,36 @@ func contains(ranges: openArray[(int, int)], cp: int): bool =
     else: return true
   false
 
+func isControl*(r: Rune): bool {.inline.} =
+  ## True for C0 and C1 control characters — the codepoints that take no columns
+  ## but that a terminal *acts* on rather than draws.
+  ##
+  ## Exported because "measures zero" and "does something" are two different
+  ## facts about the same set, and only the first of them is a width. A newline
+  ## is the case that matters: `runeWidth` calls it zero columns, correctly, and
+  ## a caller that puts one in a line ends up with two lines that the layout
+  ## counted as one. `oneLine <ansi.html#oneLine,string>`_ is what that caller
+  ## wants, and this is the classification it shares with `runeWidth` so the two
+  ## cannot drift.
+  ##
+  ## C1 is included, and it is the half that is easy to miss: U+0085 is NEL, and
+  ## terminals that honour it break the line exactly as `\n` does. As a rune it
+  ## arrives from perfectly ordinary UTF-8 text (`\xC2\x85`) rather than as a
+  ## stray byte.
+  let cp = r.int32.int
+  cp < 0x20 or cp in 0x7F .. 0x9F
+
 func runeWidth*(r: Rune): int =
   ## Terminal columns occupied by `r`: 0, 1 or 2. See the module docs for the
   ## classification and its limits.
   ##
-  ## Control characters are 0 rather than `wcwidth`'s -1: a control character
-  ## reaching the renderer is a bug in the caller, and a negative width would
-  ## make column arithmetic silently run backwards instead of merely being
-  ## wrong by a cell.
+  ## Control characters are 0 rather than `wcwidth`'s -1: a negative width would
+  ## make column arithmetic silently run backwards instead of merely being wrong
+  ## by a cell. Zero is the honest answer — a control character draws nothing —
+  ## but note that it is not the *harmless* answer, because several of them move
+  ## the cursor. See `isControl <#isControl,Rune>`_.
   let cp = r.int32.int
-  if cp < 0x20 or cp in 0x7F .. 0x9F: return 0
+  if r.isControl: return 0
   if cp < 0x0300: return 1                  # fast path: Latin, Greek, Cyrillic
   # Zero-width is tested first: a few codepoints are both East Asian Wide and
   # nonspacing (U+3099 and U+16FE4), and there the mark wins.

@@ -12,7 +12,7 @@
 ## docs for the extension point if you need genuinely concurrent effects.
 
 import std/[monotimes, times, algorithm]
-import ./[ansi, messages, input, renderer, tty]
+import ./[ansi, messages, input, renderer, tty, query]
 
 type
   UpdateProc*[M] = proc (model: M, msg: Msg): (M, Cmd) {.closure.}
@@ -23,6 +23,7 @@ type
     poHideCursor         ## hide the cursor for the duration of the program
     poMouseCellMotion    ## report mouse motion while a button is held
     poMouseAllMotion     ## report all mouse motion
+    poQueryBackground    ## ask the terminal its background colour at startup
 
   Program*[M] = ref object
     model*: M
@@ -32,6 +33,10 @@ type
     options*: set[ProgramOption]
     escTimeoutMs*: int   ## how long a lone ESC waits for a sequence to finish
     idleTimeoutMs*: int  ## upper bound on how long the loop blocks on input
+    terminalBg*: Color
+      ## What `poQueryBackground` found, or `ckDefault`. The same value that went
+      ## out as a `TerminalBgMsg`, kept for a caller that reads the program back
+      ## after `run` returns rather than storing it in the model.
     renderer: Renderer
     terminal: Tty
     queue: seq[Msg]
@@ -144,6 +149,10 @@ proc runHeadless*[M](p: Program[M], msgs: openArray[Msg], maxTimers = 256): M =
   ## Timers are delivered immediately in scheduled order rather than waited on,
   ## so tests stay deterministic. Returns the final model.
   ##
+  ## There being no terminal, `poQueryBackground` does nothing here: a test that
+  ## wants to exercise what its `TerminalBgMsg` leads to should put one in `msgs`,
+  ## which is also the only way to test the case where the terminal declined.
+  ##
   ## `maxTimers` bounds how many timer payloads are delivered across the whole
   ## run. The bound cannot be dispensed with: an `update` that re-issues `tick`
   ## when it fires — the documented way to repeat — is never out of timers, so
@@ -216,12 +225,25 @@ proc run*[M](p: Program[M], input = stdin, output = stdout): M =
   watchResize()
   p.setupTerminal()
   try:
+    # Bytes read but not yet decoded. Declared before the query rather than
+    # inside the loop because the query reads from the same stream and may pick
+    # up a keystroke on the way: those belong to the loop, not to the answer.
+    var buf = ""
+
+    if poQueryBackground in p.options:
+      # Here and nowhere else. The question needs raw mode, so it cannot be asked
+      # before `setupTerminal`; the answer has to be in the model before the first
+      # frame, so it cannot be asked after the render below. Between the two, this
+      # is the only owner of the input stream — which is what makes asking safe at
+      # all, rather than a race with the decoder for the same bytes.
+      p.terminalBg = queryBackground(p.terminal, buf)
+      p.send TerminalBgMsg(color: p.terminalBg)
+
     p.syncSize()
     p.enqueue p.initCmd
     if not p.drain(): return p.model
     p.renderer.render p.view(p.model)
 
-    var buf = ""
     while p.running:
       let now = getMonoTime()
       let event = p.terminal.waitForInput(p.nextTimeoutMs(now, buf.len > 0))

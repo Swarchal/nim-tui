@@ -166,6 +166,55 @@ proc parseOne(buf: string, i: int, flushEsc: bool): tuple[msg: Msg, len: int] =
               of 'F': kEnd
               else: kNone
       return if k == kNone: (nil, 3) else: (Msg(KeyMsg(key: k)), 3)
+    of StringIntroducers:
+      # A string sequence — OSC, DCS, SOS, PM or APC — which is an *answer*, not
+      # a keypress: the terminal replying to a query, its own or another
+      # program's. Everything up to the terminator is payload.
+      #
+      # Decoded here because the alternative is not "ignored", it is typed. With
+      # no branch for it, `ESC ]` fell to the alt-modified path below and an
+      # OSC 11 reply arrived as alt+`]` followed by `1`, `1`, `;`, `r`, `g`, `b`
+      # … as ordinary runes, straight into whatever had focus. An application
+      # that never asks a question is not safe from this: anything else sharing
+      # the terminal can ask, and the reply comes back on this stream.
+      let kind = buf[i + 1]
+      # Only OSC is reported. The other four are consumed and dropped — nothing
+      # here queries with them, and a payload no one can interpret is worth
+      # exactly as much as the bytes being gone, which is the same contract as an
+      # unrecognised CSI.
+      template answer(stop: int): Msg =
+        if kind == ']': Msg(OscMsg(payload: buf[i + 2 ..< stop])) else: nil
+
+      var j = i + 2
+      while j < buf.len:
+        if buf[j] == '\a':                      # BEL, the informal terminator
+          return (answer(j), j - i + 1)
+        if buf[j] == Esc:
+          if j + 1 >= buf.len: break            # an ST that may still be in flight
+          if buf[j + 1] == '\\':                # ST, the real one
+            return (answer(j), j - i + 2)
+          # An ESC that is not ST: the sequence is malformed, or a real one
+          # started inside it. Consume what came before and leave the ESC to be
+          # decoded next, rather than swallowing a keypress with it.
+          return (nil, j - i)
+        inc j
+
+      # Off the end of the buffer with no terminator.
+      if not flushEsc: return (nil, 0)
+      if j == i + 2:
+        # Nothing but the introducer, and the read has timed out: far more
+        # likely alt+`]` than a reply that stalled after two bytes. Reported the
+        # way the branch below would, since that is the behaviour this is
+        # preserving.
+        let (m, n) = parseOne(buf, i + 1, flushEsc)
+        if n > 0 and m != nil and m of KeyMsg: KeyMsg(m).mods.incl mAlt
+        return (m, n + 1)
+      # A payload that will never be terminated. Swallowed rather than resolved
+      # to `ESC` and the rest typed, which is the convention for a truncated CSI
+      # and is wrong here: `11;rgb:1e1e` appearing in a text field is never what
+      # anyone wanted, and losing a reply costs only the answer to a question
+      # whose caller already has to cope with silence.
+      return (nil, buf.len - i)
     of Esc:
       return (Msg(KeyMsg(key: kEsc)), 1)
     else:

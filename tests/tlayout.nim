@@ -268,3 +268,34 @@ suite "alignment":
       for w in 1 .. 12:
         check displayWidth(alignVisible("abcde", w, align)) == w
         check displayWidth(alignVisible("日本語", w, align)) == w
+
+suite "a border label is one line":
+  ## A title or footer is let into a border row, so a line break in one makes the
+  ## box a row taller than the height it was asked for — and a caller passing a
+  ## filename, a position label or an error string has no reason to expect that
+  ## the string has to be flat.
+
+  test "a box with a newline in its title is still exactly as tall":
+    for h in [3, 5, 12]:
+      for w in [20, 40]:
+        let b = renderBox("content", w, h, title = "one\ntwo")
+        checkpoint $w & "x" & $h
+        check blockHeight(b) == h
+        for line in b.split('\n'):
+          check displayWidth(line) == w
+
+  test "and so is one with a newline in its footer":
+    let b = renderBox("content", 30, 4, title = "t", footer = "1\n/\n9")
+    check blockHeight(b) == 4
+    for line in b.split('\n'):
+      check displayWidth(line) == 30
+
+  test "the label is still readable, flattened":
+    check "one two" in renderBox("x", 30, 3, title = "one\ntwo").stripAnsi
+
+  test "a Panel built the long way behaves the same":
+    let p = panel().title("a\nb").footer("c\td")
+    let b = p.render("body", 24, 5)
+    check blockHeight(b) == 5
+    for line in b.split('\n'):
+      check displayWidth(line) == 24

@@ -6,3 +6,7 @@ bin/
 tests/t[a-z]*
 !tests/t[a-z]*.nim
 !tests/*.nims
+# and beside the manual fixtures, which are deliberately not named t* — that is
+# what keeps `nimble test` from compiling them — and so miss the rule above
+tests/manual/askbg
+tests/manual/orc_closure_threads

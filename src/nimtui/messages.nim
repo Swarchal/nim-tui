@@ -9,10 +9,14 @@
 ## pure part of the program. Returning `nil` means "no follow-up message".
 
 import std/[monotimes, times, unicode, strutils]
+import ./color
 
 # MonoTime and Duration appear in the public message types, so callers need
-# them without a second import.
+# them without a second import. `color` is here for the same reason —
+# `TerminalBgMsg` carries one — and costs no layering: `color` is pure
+# arithmetic with no dependencies of its own.
 export monotimes, Duration, initDuration, DurationZero
+export color
 
 type
   Msg* = ref object of RootObj
@@ -53,6 +57,31 @@ type
   WindowSizeMsg* = ref object of Msg
     ## Sent once at startup and again on every SIGWINCH.
     width*, height*: int
+
+  OscMsg* = ref object of Msg
+    ## An OSC string the terminal sent us: everything between `ESC ]` and the
+    ## terminator, so an OSC 11 reply arrives with `payload` of
+    ## `11;rgb:1e1e/1e1e/1e1e`.
+    ##
+    ## Almost always an answer to a question — either one this program asked (see
+    ## `nimtui/query <query.html>`_) or one something else sharing the terminal
+    ## did. An application with no interest in them can ignore this type
+    ## entirely; the point of decoding it is that the bytes are then *not* typed
+    ## into the focused widget as runes, which is what happened before there was
+    ## a message for them.
+    payload*: string
+
+  TerminalBgMsg* = ref object of Msg
+    ## The terminal's background colour, sent once at startup when the program
+    ## was created with `poQueryBackground`.
+    ##
+    ## `ckDefault` means the terminal would not say — no answer, a malformed one,
+    ## or not a terminal at all. That is not an error and every recipient has to
+    ## handle it: it is the normal case on a terminal that does not implement
+    ## OSC 11, and a palette that cannot cope without an answer should not be
+    ## asking. Delivered before the first `WindowSizeMsg` and before `initCmd`
+    ## runs, so a theme derived from it is in place for the first frame.
+    color*: Color
 
   QuitMsg* = ref object of Msg
     ## Stops the runtime. Not forwarded to `update`.

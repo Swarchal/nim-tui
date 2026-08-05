@@ -194,3 +194,56 @@ suite "sliceVisible":
     let s = "ab\e[31mcd\e[0mef"
     check sliceVisible(s, 0, 6).stripAnsi == "abcdef"
     check sliceVisible(s, 0, 6).count("\e[") == 2
+
+suite "oneLine":
+  ## A control character measures zero columns and draws as an *action* — a line
+  ## break, most of the time. `oneLine` is the boundary between text that came
+  ## from somewhere else and a frame whose height the layout has already counted.
+
+  test "the control characters that make a second line become spaces":
+    # One space per control character, so `\r\n\t` is three of them.
+    check oneLine("traceback:\n  line one\r\n\tline two") ==
+          "traceback:   line one   line two"
+    check '\n' notin oneLine("a\nb")
+    check '\r' notin oneLine("a\rb")
+    check '\t' notin oneLine("a\tb")
+    check oneLine("\x0bvertical\x0ctab") == " vertical tab"
+
+  test "text with nothing to flatten comes back unchanged":
+    for s in ["", "plain ascii", "日本語", "with  spaces  ", "a-b_c/d.e"]:
+      check oneLine(s) == s
+
+  test "escape sequences survive intact":
+    # ESC is itself a control character, so flattening bytes naively dismantles
+    # every sequence in the string — and pre-styled text is the normal case, since
+    # a per-cell colour has nowhere to live but the cell.
+    let s = "\e[31mred\e[0m"
+    check oneLine(s) == s
+    check oneLine("\e[31mred\nline\e[0m") == "\e[31mred line\e[0m"
+    # An OSC payload is punctuation all the way down and must not be touched either.
+    check oneLine("\e]11;rgb:1e1e/1e1e/1e1e\e\\") == "\e]11;rgb:1e1e/1e1e/1e1e\e\\"
+
+  test "C1 controls count, and arrive as ordinary UTF-8":
+    # U+0085 is NEL: terminals that honour it break the line exactly as `\n`
+    # does, and it reaches a log message as two perfectly valid UTF-8 bytes
+    # rather than as a stray byte anything would flag.
+    check oneLine("before\u0085after") == "before after"
+    check "\u0085" notin oneLine("before\u0085after")
+
+  test "multi-byte runes are not mistaken for control bytes":
+    # Every continuation byte of a UTF-8 sequence is >= 0x80, and a naive byte
+    # scan reads a good many of them as C1 controls.
+    for s in ["é±°©", "日本語のログ", "→ ← ↑ ↓", "🙂"]:
+      check oneLine(s) == s
+
+  test "flattening widens, which is why it happens before measuring":
+    # Not width-preserving, and nothing downstream may assume otherwise: a
+    # control character is zero columns and the space replacing it is one. Every
+    # helper that fits text to a width flattens on the way in for this reason.
+    check displayWidth("a\nb") == 2
+    check displayWidth(oneLine("a\nb")) == 3
+
+  test "and it is the only thing that changes":
+    for s in ["a\nb", "x\ty", "\e[31mq\nr\e[0m", "日\n本"]:
+      check oneLine(s).len == s.len             # one byte in, one byte out
+      check oneLine(oneLine(s)) == oneLine(s)   # idempotent

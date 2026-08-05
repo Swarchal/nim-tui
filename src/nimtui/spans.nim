@@ -18,6 +18,14 @@
 ## about height; `render` turns it into an ordinary string, which is what every
 ## helper in `nimtui/layout <layout.html>`_ takes. Build lines with `Spans`,
 ## compose blocks with strings.
+##
+## That is enforced rather than assumed: text entering a run is flattened with
+## `oneLine <ansi.html#oneLine,string>`_, so a caller who puts a stack trace in a
+## table cell gets a line with spaces in it instead of a frame one row taller
+## than the layout counted. It happens on the way in because flattening is not
+## width-preserving — a control character measures zero columns and the space
+## replacing it measures one — so every measurement from here on is of the string
+## that will actually be drawn.
 
 import std/[strutils, unicode]
 import ./[ansi, style]
@@ -41,14 +49,22 @@ type
 
 proc span*(text: string, style = Style()): Spans =
   ## A one-run line, the usual starting point for `&`.
-  Spans(items: @[Span(text: text, style: style)])
+  Spans(items: @[Span(text: oneLine(text), style: style)])
 
 proc add*(s: var Spans, text: string, style = Style()) =
   ## Append a run. Empty text is dropped rather than stored, so a conditional
   ## `add(maybeEmpty, st)` cannot leave a run that renders as a bare
   ## on/off escape pair.
+  ##
+  ## Control characters in `text` become spaces — `oneLine
+  ## <ansi.html#oneLine,string>`_ — because a `Spans` is a line, and that claim
+  ## has to be made true somewhere rather than merely documented. On the way in
+  ## is the only place it can be: flattening changes the width by a column per
+  ## control character, so doing it at `render` would mean every measurement
+  ## taken between here and there was of a different string than the one drawn.
+  ## Here, `displayWidth` and `truncate` see exactly what comes out.
   if text.len > 0:
-    s.items.add Span(text: text, style: style)
+    s.items.add Span(text: oneLine(text), style: style)
 
 proc add*(s: var Spans, other: Spans) =
   for sp in other.items: s.items.add sp
@@ -191,30 +207,35 @@ proc gradientSpans*(text: string, g: Gradient, base = Style(),
   ## attributes (bold, italic) that every run shares; `background` ramps the
   ## background colour instead of the foreground.
   if text.len == 0 or g.isEmpty: return span(text, base)
-  let total = displayWidth(text)
-  if total <= 0: return span(text, base)
+  # Flattened once, here, rather than per run: this is the one path that builds
+  # runs without going through `add`, so it is the one place a control character
+  # could still reach a span — and a span holding a line break is a `Spans` that
+  # is not a line.
+  let flat = oneLine(text)
+  let total = displayWidth(flat)
+  if total <= 0: return span(flat, base)
 
   result.items = newSeqOfCap[Span](total)
   var
     i = 0
     col = 0
-  while i < text.len:
-    let n = escapeLen(text, i)
+  while i < flat.len:
+    let n = escapeLen(flat, i)
     if n > 0:
       # Pass an existing escape through untouched: it belongs to the caller's
       # own styling and takes no columns, so it must not advance the ramp.
       var raw = newStringOfCap(n)
-      for k in i ..< i + n: raw.add text[k]
+      for k in i ..< i + n: raw.add flat[k]
       result.items.add Span(text: raw, style: Style())
       i += n
       continue
     let start = i
     var r: Rune
-    fastRuneAt(text, i, r, true)
+    fastRuneAt(flat, i, r, true)
     let t = if total <= 1: 0.0 else: col.float / (total - 1).float
     let c = g.at(t)
     var piece = newStringOfCap(i - start)
-    for k in start ..< i: piece.add text[k]
+    for k in start ..< i: piece.add flat[k]
     result.items.add Span(text: piece,
                           style: if background: base.bg(c) else: base.fg(c))
     col += runeWidth(r)

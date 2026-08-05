@@ -47,6 +47,14 @@ proc isFinalByte*(c: char): bool =
   ## True for the terminating byte of a CSI sequence (`@` through `~`).
   c.ord in 0x40 .. 0x7E
 
+const StringIntroducers* = {']', 'P', 'X', '^', '_'}
+  ## The introducers of a *string* escape sequence: OSC, DCS, SOS, PM and APC.
+  ## All five carry a payload of arbitrary length and end at a terminator rather
+  ## than at a final byte, which is what separates them from CSI. Named because
+  ## `escapeLen <#escapeLen,string,int>`_ and the input decoder have to agree
+  ## about which sequences those are — a sequence measured as two bytes here and
+  ## consumed whole there, or the reverse, is a desynchronised stream.
+
 proc escapeLen*(s: string, i: int): int =
   ## Length in bytes of the escape sequence starting at `s[i]`, or 0 if there
   ## is no escape sequence there. An unterminated sequence returns the number
@@ -60,7 +68,19 @@ proc escapeLen*(s: string, i: int): int =
     while j < s.len and not isFinalByte(s[j]): inc j
     if j < s.len: inc j
     result = j - i
-  of ']':                             # OSC: terminated by BEL or ST
+  of StringIntroducers:               # OSC/DCS/SOS/PM/APC: terminated by ST or BEL
+    # All five together, not OSC alone. A DCS measured as two bytes — which is
+    # what this did — leaves its payload to be counted as visible text, so a
+    # `\ePtmux;…\e\\` passthrough wrapper, a sequence an application has every
+    # reason to emit, measured as forty-odd columns of nothing.
+    #
+    # BEL officially terminates only OSC; accepted for all five here because
+    # nothing else ends a string sequence, so it can only shorten one that was
+    # already malformed. The known limit is the other direction: a payload
+    # carrying *doubled* escapes, as tmux's passthrough wrapper does, ends at the
+    # first `\e\\` this finds inside it rather than at the real one. Undoing that
+    # doubling is tmux's convention rather than the terminal's, and does not
+    # belong in a general scanner — the result is short, where it used to be two.
     inc j
     while j < s.len:
       if s[j] == '\a':
@@ -109,6 +129,71 @@ proc addSlice(dest: var string, src: string, first, last: int) {.inline.} =
   ## which measured as 15x the cost of the same walk done without copying.
   for k in first .. last:
     dest.add src[k]
+
+proc needsFlattening(s: string): bool =
+  ## Is there a control character in `s` that `oneLine` would replace?
+  ##
+  ## A byte scan rather than a rune walk, because this is the fast path and the
+  ## answer is almost always no. `ESC` is skipped rather than counted: it is a
+  ## control character, but it is the one that legitimately appears in styled
+  ## text, and `oneLine` hands it to `escapeLen` instead of replacing it.
+  ##
+  ## The `\xC2` case is the C1 controls, U+0080 to U+009F, which encode as `\xC2`
+  ## and a byte in that range — U+0085 is NEL and breaks a line exactly as `\n`
+  ## does. Checking the second byte as well as the first is what keeps `©` and
+  ## `°`, which also begin `\xC2`, on the fast path.
+  for i in 0 ..< s.len:
+    let c = s[i]
+    if c == Esc: continue
+    if c < ' ' or c == '\x7f': return true
+    if c == '\xc2' and i + 1 < s.len and s[i + 1] in '\x80' .. '\x9f':
+      return true
+  false
+
+proc oneLine*(s: string): string =
+  ## `s` with every control character replaced by a space, escape sequences left
+  ## intact.
+  ##
+  ## For text that is about to become *one line* of a frame and came from
+  ## somewhere that does not know that — a log message, an exception's `msg`, a
+  ## filename, anything a user or another program chose. A newline in such a
+  ## string is measured by `displayWidth` as nothing at all and drawn by the
+  ## terminal as a line break, so the frame comes out taller than the layout
+  ## counted and every line below it lands a row late. That failure is invisible
+  ## to a dimensional assertion: each line really is the right width.
+  ##
+  ## **Flatten before measuring, never after.** A control character is zero
+  ## columns and a space is one, so this does not preserve width — it is a step
+  ## that has to happen before anything is fitted, padded or aligned. Every
+  ## helper here that fits text to a width does it on the way in; see the note in
+  ## `nimtui/spans <spans.html>`_.
+  ##
+  ## A space rather than nothing, because the usual input is a stack trace and
+  ## dropping the newlines runs the last word of one line into the first of the
+  ## next. Escapes survive because pre-styled text is normal — a `Table` cell
+  ## carrying its own colour is the documented way to colour one cell — and `ESC`
+  ## is itself a control character, so flattening bytes naively would dismantle
+  ## every sequence in the string.
+  ##
+  ## Nearly every call has nothing to do — this runs twice per cell per frame
+  ## from `Table` alone — so the common case is a byte scan that allocates
+  ## nothing and returns the string it was given. Measured on a 40-row frame,
+  ## the rune-walking version of that check cost about as much again as the
+  ## `displayWidth` beside it; this one does not show up.
+  if not s.needsFlattening: return s
+  result = newStringOfCap(s.len)
+  var i = 0
+  while i < s.len:
+    let n = escapeLen(s, i)
+    if n > 0:
+      result.addSlice s, i, i + n - 1
+      i += n
+      continue
+    let start = i
+    var r: Rune
+    fastRuneAt(s, i, r, true)
+    if r.isControl: result.add ' '
+    else: result.addSlice s, start, i - 1
 
 proc truncateVisible*(s: string, width: int): string =
   ## `s` cut to `width` visible columns. Escape sequences are always kept, even

@@ -256,11 +256,17 @@ proc statusBar*(left, center, right: string, width: int,
   ## is worse than one slightly off centre. When the three cannot all fit the
   ## centre is dropped first, then the right is truncated, then the left: the
   ## leftmost segment is the one most likely to say where you are.
+  ##
+  ## The three segments are flattened onto one line — a status bar is where a
+  ## path, a branch name or a message from somewhere else ends up, and a newline
+  ## in one would make this two bars. Unlike the rest of the widgets here it
+  ## measures and concatenates raw strings rather than building a `Spans`, so it
+  ## does not inherit that module's guarantee and has to make it itself.
   if width <= 0: return ""
   var
-    l = left
-    c = center
-    r = right
+    l = oneLine(left)
+    c = oneLine(center)
+    r = oneLine(right)
     lw = displayWidth(l)
     cw = displayWidth(c)
     rw = displayWidth(r)

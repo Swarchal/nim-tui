@@ -37,6 +37,7 @@
 ## * `nimtui/style` — SGR colours and attributes
 ## * `nimtui/renderer` — diff-skipping line renderer
 ## * `nimtui/tty` — raw mode and terminal size (the only POSIX-specific module)
+## * `nimtui/query` — asking the terminal a question, and reading its answer
 ## * `nimtui/program` — the event loop
 ##
 ## Building a view out of blocks of text, independent of the runtime:
@@ -54,9 +55,9 @@
 ## * `nimtui/textarea` — a read-only scrolling pane over wrapped text
 ## * `nimtui/textinput` — a single-line editable field
 
-import nimtui/[ansi, color, messages, input, style, renderer, tty, program,
+import nimtui/[ansi, color, messages, input, style, renderer, tty, query, program,
                spans, layout, widgets, table, theme,
                viewport, listview, textarea, textinput]
-export ansi, color, messages, input, style, renderer, tty, program
+export ansi, color, messages, input, style, renderer, tty, query, program
 export spans, layout, widgets, table, theme
 export viewport, listview, textarea, textinput

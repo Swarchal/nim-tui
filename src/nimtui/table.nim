@@ -64,7 +64,26 @@ proc add*(t: var Table, cells: varargs[string]) =
   t.rows.add @cells
 
 proc cell(t: Table, row, col: int): string =
-  if row < t.rows.len and col < t.rows[row].len: t.rows[row][col] else: ""
+  ## The cell's content, flattened onto one line.
+  ##
+  ## Every read of a cell goes through here — `columnWidths` to size the column
+  ## and `render` to draw it — which is what makes this the place to flatten. A
+  ## cell holding a newline is measured by `displayWidth` as nothing and drawn by
+  ## the terminal as a line break, so the table returns more lines than it has
+  ## rows and everything below it in the frame lands a row late. Log messages and
+  ## exception text are the normal contents of a table cell and neither is under
+  ## the caller's control.
+  ##
+  ## Here rather than in `add`, so that a caller who writes to `rows` directly —
+  ## a public field, and the cheap way to reuse a table across frames — gets the
+  ## same guarantee. And before measuring, never after: see `oneLine
+  ## <ansi.html#oneLine,string>`_.
+  if row < t.rows.len and col < t.rows[row].len: oneLine(t.rows[row][col]) else: ""
+
+proc headerText(c: Column): string =
+  ## The header, flattened — `cell`'s reason, for the row above the rows. Not
+  ## named `header`, which is the field it reads.
+  oneLine(c.header)
 
 proc columnWidths*(t: Table, total = 0): seq[int] =
   ## The content width of each column, before padding and separators.
@@ -78,7 +97,7 @@ proc columnWidths*(t: Table, total = 0): seq[int] =
     if c.width > 0:
       result[i] = c.width
     else:
-      var w = if t.showHeader: displayWidth(c.header) else: 0
+      var w = if t.showHeader: displayWidth(c.headerText) else: 0
       for r in 0 ..< t.rows.len:
         w = max(w, displayWidth(t.cell(r, i)))
       result[i] = w
@@ -192,7 +211,7 @@ proc render*(t: Table, width = 0): string =
       styles = newSeq[Style](n)
       aligns = newSeq[Align](n)
     for i, c in t.columns:
-      headers[i] = c.header
+      headers[i] = c.headerText
       styles[i] = c.headerStyle
       aligns[i] = c.headerAlign
     lines.add t.renderRow(widths, headers, styles, aligns, Style())

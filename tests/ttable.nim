@@ -1,4 +1,4 @@
-import std/[unittest, strutils]
+import std/[unittest, strutils, sequtils]
 import nimtui/[ansi, style, color, layout, table]
 
 ## Columns line up or they do not, and "do not" means every row after the wide
@@ -170,3 +170,69 @@ suite "table appearance":
     check t.totalWidth == base + t.columns.len * 2
     for line in t.lines():
       check displayWidth(line) == t.totalWidth
+
+suite "a cell that is not one line":
+  ## The failure this prevents is not a wrong-looking table, it is a
+  ## desynchronised frame: `displayWidth` counts a newline as no columns, so the
+  ## table reports the height the layout believed while the terminal draws one
+  ## line more, and every line below it lands a row late. Log messages and
+  ## exception text are the ordinary contents of a table cell, and neither is
+  ## under the caller's control.
+
+  proc withMessages(msg: string): Table =
+    result = table([column("level"), column("message"), column("age")])
+    result.add("INFO", "started", "1s")
+    result.add("ERROR", msg, "2s")
+    result.add("INFO", "carried on", "3s")
+
+  const trace = "boom: connection refused\n  at dial()\n\tat main()"
+
+  test "the table is exactly as tall as its rows, whatever is in them":
+    let flat = withMessages("boom")
+    let multi = withMessages(trace)
+    for w in [0, 80, 60, 40, 24, 12]:
+      checkpoint "width " & $w
+      check multi.lines(w).len == flat.lines(w).len
+
+  test "and every line is still exactly the width asked for":
+    let t = withMessages(trace)
+    for w in [80, 60, 40, 30, 24, 16, 8]:
+      for line in t.lines(w):
+        checkpoint "width " & $w & ": " & line
+        check displayWidth(line) == w
+
+  test "the message is still there, on one line, with spaces for the breaks":
+    let rendered = withMessages(trace).render(80)
+    check '\n' in rendered                    # the row separators, and only those
+    let row = rendered.split('\n').filterIt("boom" in it)[0]
+    check "at main()" in row                  # all three fragments on one line
+    check "at dial()" in row
+
+  test "a header with a newline in it does not add a line either":
+    # Rarer than a cell, and reached the same way: `header` is a public field.
+    var t = sample()
+    let before = t.lines(60).len
+    t.columns[0].header = "ser\nvice"
+    check t.lines(60).len == before
+    for line in t.lines(60):
+      check displayWidth(line) == 60
+
+  test "a cell written straight into `rows` is flattened too":
+    # `add` is not the only way in — reusing a table across frames by assigning
+    # `rows` is cheaper and documented, so the guarantee cannot live in `add`.
+    var t = sample()
+    t.rows[0][0] = "api\nv2"
+    check t.lines(50).len == sample().lines(50).len
+    for line in t.lines(50):
+      check displayWidth(line) == 50
+
+  test "the natural width accounts for the flattened cell, not the raw one":
+    # `columnWidths` sizes a flexible column from its content, so it has to
+    # measure the same string `render` draws. Unflattened, "a\nb" is two columns
+    # and the column comes out one narrower than the three it ends up drawing —
+    # which is why the flattening lives in the accessor both of them go through.
+    var narrow = table([column("c")])
+    narrow.add("a\nb")
+    check narrow.columnWidths() == @[3]
+    for line in narrow.render().split('\n'):
+      check displayWidth(line) == narrow.totalWidth

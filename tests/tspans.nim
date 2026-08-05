@@ -163,3 +163,53 @@ suite "gradient text":
     let s = gradientSpans("abc", gradient(Red, Blue), Style().bold())
     for item in s.items:
       check aBold in item.style.attrs
+
+suite "a Spans is a line":
+  ## The module claims it in its first paragraph; these are the assertions that
+  ## make the claim true rather than aspirational. The reason it has to be true
+  ## here, on the way in, is that flattening is not width-preserving — so a
+  ## `Spans` that measured one thing and rendered another would put the
+  ## discrepancy inside every helper that had already fitted it to a column.
+
+  test "a run cannot carry a line break":
+    var line: Spans
+    line.add("first\nsecond")
+    check '\n' notin line.render()
+    check '\n' notin line.text
+    check line.text == "first second"
+
+  test "nor can the one-run constructor":
+    check '\n' notin span("a\nb").render()
+    check span("a\nb").text == "a b"
+
+  test "what it measures is what it renders":
+    # The property everything downstream rests on. Measured before flattening,
+    # "a\nb" is two columns and draws as three across two lines.
+    for s in ["a\nb", "x\ty\rz", "log:\n  at main()", "日\n本"]:
+      var line: Spans
+      line.add(s)
+      checkpoint s
+      check line.displayWidth == displayWidth(line.render())
+      check line.render().split('\n').len == 1
+
+  test "fitting to a width still hits it exactly":
+    for w in 1 .. 12:
+      var line: Spans
+      line.add("one\ntwo\nthree")
+      check displayWidth(line.fit(w).render()) == w
+
+  test "styling survives the flattening":
+    var line: Spans
+    line.add("a\nb", Style().fg(hex"#ff0000"))
+    let rendered = line.render()
+    check '\n' notin rendered
+    check rendered.stripAnsi == "a b"
+    check rendered.startsWith(Style().fg(hex"#ff0000").sgr)
+
+  test "a gradient run is flattened too":
+    # `gradientSpans` builds its runs directly rather than through `add`, so it is
+    # the one path that could still produce a span holding a break.
+    let g = gradientSpans("up\ndown", CoolGradient)
+    check '\n' notin g.render()
+    check g.text == "up down"
+    check g.displayWidth == 7
