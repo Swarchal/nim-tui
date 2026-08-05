@@ -108,6 +108,26 @@ suite "spans rendering":
     check s.render().count("\e[") == 4
     check s.render().stripAnsi == "ab"
 
+  test "a run's style survives a reset the text brought with it":
+    # Text that is already styled — a table cell the caller coloured — ends its
+    # own styling with a reset, which clears the run's background as well. The
+    # run has to be re-armed after it, or the fill stops at that point and the
+    # rest of the run is a hole.
+    let bg = Style().bg(Blue)
+    var s: Spans
+    s.add(Style().fg(Red).render("WARN") & "   ", bg)
+    let r = s.render()
+    check r.stripAnsi == "WARN   "
+    check r.endsWith(Reset)
+    # The three spaces after the inner reset are painted, not bare.
+    check (Reset & bg.sgr() & "   ") in r
+
+  test "an unstyled run is left exactly as it arrived":
+    # Nothing to re-arm, and nothing to copy: the guard is what keeps text with
+    # escapes in it from being rewritten when the run adds no style of its own.
+    let text = Style().fg(Red).render("WARN") & "   "
+    check span(text).render() == text
+
 suite "gradient text":
   test "the visible text and width are unchanged":
     let g = gradient(Red, Blue)

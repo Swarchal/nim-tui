@@ -152,6 +152,13 @@ proc render*(s: Spans): string =
   ## without coalescing a 200-column line of near-identical colours would carry
   ## 200 redundant on/off pairs — several kilobytes per line, all of it churned
   ## through the renderer's per-line compare every frame.
+  ##
+  ## A run's text may arrive with escapes already in it — a table cell the
+  ## caller coloured, a message with a highlight in it. The reset that ends
+  ## *its* styling ends this run's too, since a reset clears everything, so the
+  ## run's style is re-armed after each one. Without that, a span setting a
+  ## background is only painted as far as the first embedded reset and the rest
+  ## of it is a hole in the colour.
   var bytes = 0
   for sp in s.items: bytes += sp.text.len + 8
   result = newStringOfCap(bytes)
@@ -161,7 +168,12 @@ proc render*(s: Spans): string =
     while j < s.items.len and s.items[j].style == s.items[i].style: inc j
     let on = s.items[i].style.sgr()
     if on.len > 0: result.add on
-    for k in i ..< j: result.add s.items[k].text
+    for k in i ..< j:
+      let text = s.items[k].text
+      # The `contains` is what keeps the common case — text with no escapes at
+      # all — from allocating a copy of every run.
+      if on.len > 0 and Reset in text: result.add text.replace(Reset, Reset & on)
+      else: result.add text
     if on.len > 0: result.add Reset
     i = j
 

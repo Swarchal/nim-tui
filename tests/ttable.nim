@@ -148,6 +148,21 @@ suite "table appearance":
     check "88;166;255" in body              # the column's foreground survived
     check "22;27;51" in body                # the row's background applied
 
+  test "a striped row keeps its background across a cell the caller coloured":
+    # A per-cell colour has to be baked into the cell text — the table styles
+    # columns and rows, not cells — so a striped row carries a reset in the
+    # middle of it. The stripe has to come back after it, or the row is painted
+    # only as far as the coloured word and the rest of that cell is a hole.
+    let bg = Style().bg(hex"#161b33")
+    var t = table([column("level", width = 9), column("message")])
+    t.zebra = bg
+    t.add("INFO", "first")
+    t.add(Style().fg(hex"#d29922").render("WARNING"), "second")
+    let striped = t.render(40).split('\n')[4]
+    check "WARNING" in striped.stripAnsi
+    check (Reset & bg.sgr()) in striped     # re-armed after the cell's own reset
+    check displayWidth(striped) == 40
+
   test "padding widens every column by the same amount":
     var t = sample()
     let base = t.totalWidth
