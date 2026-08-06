@@ -11,7 +11,7 @@
 ## `tick`, which the loop schedules rather than sleeping on. See the module
 ## docs for the extension point if you need genuinely concurrent effects.
 
-import std/[monotimes, times, algorithm]
+import std/[monotimes, times, algorithm, options]
 import ./[ansi, messages, input, renderer, style, tty, query]
 
 type
@@ -21,8 +21,18 @@ type
   ProgramOption* = enum
     poAltScreen          ## draw on the alternate screen buffer
     poHideCursor         ## hide the cursor for the duration of the program
-    poMouseCellMotion    ## report mouse motion while a button is held
-    poMouseAllMotion     ## report all mouse motion
+    poMouseClicks
+      ## Report button presses and releases, and the wheel, but no motion.
+      ##
+      ## What most applications want, and the reason it is worth a third option:
+      ## with only the two motion levels below to choose from, a program that
+      ## acts on clicks has to ask the terminal for a report on every cell the
+      ## pointer crosses with a button down, decode each into a `MouseMsg`, and
+      ## drop it in an `if e.action == maPress`. Not a correctness problem —
+      ## bytes and allocations nobody asked for, on the one input path where a
+      ## burst is expected.
+    poMouseCellMotion    ## also report motion while a button is held
+    poMouseAllMotion     ## also report motion with no button held
     poQueryBackground    ## ask the terminal its background colour at startup
     poBracketedPaste
       ## Ask the terminal to bracket pasted text, so a paste arrives as one
@@ -218,14 +228,32 @@ proc runHeadless*[M](p: Program[M], msgs: openArray[Msg], maxTimers = 256): M =
     if not p.deliverTimers(budget): return p.model
   p.model
 
+proc mouseTracking*(options: set[ProgramOption]): Option[MouseTracking] =
+  ## Which level of mouse reporting `options` asks for, if any.
+  ##
+  ## Its own proc for the same reason `terminalModes` is, and it feeds that one:
+  ## setup and teardown deciding separately whether a mouse is on at all is how a
+  ## program leaves one reporting into the shell it returns to.
+  ##
+  ## The most detailed wins when more than one is set. They are three points on a
+  ## scale rather than three separate requests, so a program asking for clicks and
+  ## all motion is asking for the superset, not stating a contradiction.
+  ##
+  ## Takes the option set rather than the `Program` in the same spirit as
+  ## `tty.restoreEscapesFor` taking modes rather than a `Tty`: what it decides is
+  ## then assertable without a terminal to enable a mouse on.
+  if poMouseAllMotion in options: some(mtAllMotion)
+  elif poMouseCellMotion in options: some(mtCellMotion)
+  elif poMouseClicks in options: some(mtClicks)
+  else: none(MouseTracking)
+
 proc terminalModes[M](p: Program[M]): set[TerminalMode] =
   ## The options that correspond to a terminal mode, which is what `tty` has to
   ## put back. In one place so setup, teardown and the armed signal restore
   ## cannot come to disagree about what is on.
   if poAltScreen in p.options: result.incl tmAltScreen
   if poHideCursor in p.options: result.incl tmHideCursor
-  if poMouseCellMotion in p.options or poMouseAllMotion in p.options:
-    result.incl tmMouse
+  if p.options.mouseTracking().isSome: result.incl tmMouse
   if poBracketedPaste in p.options: result.incl tmBracketedPaste
   if poFocusReporting in p.options: result.incl tmFocus
 
@@ -239,8 +267,8 @@ proc setupTerminal[M](p: Program[M]) =
   p.terminal.armRestore(p.terminalModes())
   if poAltScreen in p.options: p.terminal.enterAltScreen()
   if poHideCursor in p.options: p.terminal.hideCursor()
-  if poMouseAllMotion in p.options: p.terminal.enableMouse(allMotion = true)
-  elif poMouseCellMotion in p.options: p.terminal.enableMouse()
+  let mouse = p.options.mouseTracking()
+  if mouse.isSome: p.terminal.enableMouse(mouse.get)
   if poBracketedPaste in p.options: p.terminal.enableBracketedPaste()
   if poFocusReporting in p.options: p.terminal.enableFocusReporting()
 

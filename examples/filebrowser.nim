@@ -281,5 +281,9 @@ when isMainModule:
   let start = if paramCount() > 0: paramStr(1).absolutePath else: getCurrentDir()
   var model = Model(cwd: start, vp: Viewport(height: 10))
   discard newProgram(model, update, view,
-                     options = {poAltScreen, poHideCursor, poMouseCellMotion},
+                     # `poMouseClicks`, not a motion level: the only mouse events
+                     # this acts on are the wheel, which is reported at every
+                     # level, so asking for motion would be asking the terminal
+                     # to send a report per cell for the `else: discard` above.
+                     options = {poAltScreen, poHideCursor, poMouseClicks},
                      initCmd = loadDir(start, false)).run()

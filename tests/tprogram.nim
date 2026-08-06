@@ -1,4 +1,4 @@
-import std/[unittest, times, unicode]
+import std/[unittest, times, unicode, options]
 import nimtui
 
 ## `runHeadless` drives the same update/command machinery as `run` without a
@@ -176,3 +176,35 @@ suite "manual driving":
     check p.model.count == 1
     p.send key("q")
     check not p.drain()
+
+suite "mouse tracking options":
+  ## The options are three points on one scale, and the mapping onto `tty`'s enum
+  ## is where that has to be decided once. Nothing else here can be asserted
+  ## without a terminal to enable a mouse on, which is why the proc takes the
+  ## option set rather than the `Program`.
+
+  test "no mouse option asks for no reporting":
+    check {poAltScreen, poHideCursor}.mouseTracking().isNone
+
+  test "each option maps to its own level":
+    check {poMouseClicks}.mouseTracking() == some(mtClicks)
+    check {poMouseCellMotion}.mouseTracking() == some(mtCellMotion)
+    check {poMouseAllMotion}.mouseTracking() == some(mtAllMotion)
+
+  test "the most detailed level wins rather than the first or the last":
+    # Asking for clicks and all motion is asking for the superset. Resolving it
+    # the other way would silently downgrade an app that added an option.
+    check {poMouseClicks, poMouseAllMotion}.mouseTracking() == some(mtAllMotion)
+    check {poMouseClicks, poMouseCellMotion}.mouseTracking() == some(mtCellMotion)
+    check {poMouseCellMotion, poMouseAllMotion}.mouseTracking() == some(mtAllMotion)
+    check {poMouseClicks, poMouseCellMotion,
+           poMouseAllMotion}.mouseTracking() == some(mtAllMotion)
+
+  test "the levels are ordered least to most, which the resolution relies on":
+    check mtClicks < mtCellMotion
+    check mtCellMotion < mtAllMotion
+
+  test "clicks is a real option, not a synonym for off":
+    # The bug this replaces: with only two motion levels to choose from, the
+    # third state was spelled "leave the mouse off entirely".
+    check {poMouseClicks}.mouseTracking().isSome

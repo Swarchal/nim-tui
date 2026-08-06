@@ -34,6 +34,34 @@ suite "restoring the terminal":
     check "\r\n" notin restoreEscapesFor(AllModes)
     check "\n" notin restoreEscapesFor(AllModes - {tmAltScreen})
 
+suite "mouse tracking levels":
+  ## `tmMouse` covers all three levels with one escape, which is the only reason
+  ## adding `mtClicks` needed nothing in `restoreEscapesFor`. That holds because
+  ## `DisableMouse` turns off every private mode the three enables turn on — an
+  ## arithmetic fact about four constants, and the thing that quietly stops being
+  ## true the moment a fourth level is added.
+
+  test "each level turns on the SGR encoding, which is what 1006 is":
+    for on in [EnableMouse, EnableMouseCellMotion, EnableMouseAllMotion]:
+      checkpoint escape(on)
+      check "?1006h" in on
+
+  test "the three levels are distinct":
+    check EnableMouse != EnableMouseCellMotion
+    check EnableMouseCellMotion != EnableMouseAllMotion
+    check EnableMouse != EnableMouseAllMotion
+
+  test "one teardown undoes whichever level was on":
+    # Every `?<n>h` in any of the three has its `?<n>l` in DisableMouse. A level
+    # added without extending DisableMouse leaves the terminal reporting into the
+    # shell, which is the failure `tmMouse` exists to prevent.
+    for on in [EnableMouse, EnableMouseCellMotion, EnableMouseAllMotion]:
+      for part in on.split(Csi):
+        if part.len == 0: continue
+        checkpoint escape(on) & " sets " & part
+        check part.endsWith("h")
+        check Csi & part[0 ..< part.high] & "l" in DisableMouse
+
 suite "emergency restore bytes":
   test "synchronised output is ended first, since a signal can land mid-frame":
     # A frame is wrapped in BeginSyncUpdate/EndSyncUpdate, and a terminal left

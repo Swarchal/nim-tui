@@ -28,7 +28,15 @@ const
   BeginSyncUpdate* = Csi & "?2026h"
   EndSyncUpdate* = Csi & "?2026l"
 
-  ## SGR mouse reporting: button events plus cell-motion / any-motion variants.
+  ## SGR mouse reporting, in three levels: button events only (1000), plus
+  ## motion while a button is held (1002), plus motion with none held (1003).
+  ## `tty.MouseTracking` selects among them; 1006 is the SGR encoding, which is
+  ## what makes coordinates past column 223 representable and is wanted at every
+  ## level. Note the wheel is reported at all three — xterm sends it as a press
+  ## of button 4 or 5 — so an application that only scrolls wants the first.
+  ##
+  ## `DisableMouse` turns off all three whichever was on, so it is the whole of
+  ## the teardown for any of them.
   EnableMouse* = Csi & "?1000h" & Csi & "?1006h"
   EnableMouseCellMotion* = Csi & "?1002h" & Csi & "?1006h"
   EnableMouseAllMotion* = Csi & "?1003h" & Csi & "?1006h"

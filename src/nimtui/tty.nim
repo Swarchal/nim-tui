@@ -43,6 +43,18 @@ type
     tmBracketedPaste
     tmFocus
 
+  MouseTracking* = enum
+    ## How much the terminal is asked to report. Each level adds to the one
+    ## before it, and `tmMouse` undoes all three alike.
+    ##
+    ## An enum rather than the `allMotion: bool` this took before, because there
+    ## are three answers and a bool holds two — the missing one being the level
+    ## most applications actually want. A bool also reads badly at the call site:
+    ## `enableMouse(t, true)` says nothing about which of them it means.
+    mtClicks       ## button press and release only
+    mtCellMotion   ## also motion, while a button is held
+    mtAllMotion    ## also motion with no button held
+
   WinSize {.importc: "struct winsize", header: "<sys/ioctl.h>", final, pure.} = object
     ws_row, ws_col, ws_xpixel, ws_ypixel: cushort
 
@@ -329,13 +341,25 @@ proc armRestore*(t: Tty, modes: set[TerminalMode]) =
   armedFd = t.input.getFileHandle()
   armedLen = bytes.len.SigAtomic     # last: see the declaration
 
-proc enableMouse*(t: Tty, allMotion = false) =
-  ## Turn on SGR mouse reporting: motion while a button is held, or all motion.
+proc enableMouse*(t: Tty, tracking: MouseTracking) =
+  ## Turn on SGR mouse reporting at `tracking`.
   ##
   ## Here rather than at the caller for the same reason as the toggles above —
   ## this module is meant to be the only one a port has to reimplement, so which
   ## escape sequence a mode maps to is decided in one place.
-  t.write(if allMotion: EnableMouseAllMotion else: EnableMouseCellMotion)
+  ##
+  ## No default. There is one obvious candidate — the level this used to imply —
+  ## but which of three a bare `enableMouse(t)` means is exactly the question the
+  ## enum exists to stop anyone having to ask.
+  ##
+  ## Adding a level needs nothing in `restoreEscapesFor`_, since `DisableMouse`
+  ## turns off all three. `tmMouse` is the only mode where that holds; every
+  ## other one is a mode and its inverse.
+  t.write:
+    case tracking
+    of mtClicks: EnableMouse
+    of mtCellMotion: EnableMouseCellMotion
+    of mtAllMotion: EnableMouseAllMotion
 
 proc disableMouse*(t: Tty) = t.write DisableMouse
 
