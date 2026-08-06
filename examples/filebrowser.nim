@@ -43,7 +43,7 @@ type
     status: string
     statusIsError: bool
     showHidden: bool
-    width, height: int
+    size: TermSize
 
 # --- commands -----------------------------------------------------------------
 
@@ -101,7 +101,7 @@ proc loadPreview(path: string, isDir: bool): Cmd =
 
 # --- update -------------------------------------------------------------------
 
-proc listHeight(m: Model): int = max(m.height - 6, 1)
+proc listHeight(m: Model): int = max(m.size.height - 6, 1)
 
 proc selected(m: Model): Entry =
   if m.cursor < m.entries.len: m.entries[m.cursor] else: Entry()
@@ -131,10 +131,7 @@ proc goUp(m: var Model): Cmd =
 proc update(m: Model, msg: Msg): (Model, Cmd) =
   result = (m, nil)
 
-  if msg of WindowSizeMsg:
-    let w = WindowSizeMsg(msg)
-    result[0].width = w.width
-    result[0].height = w.height
+  if result[0].size.handleResize(msg):
     result[0].vp.height = result[0].listHeight
     result[0].vp.ensureVisible(result[0].cursor, m.entries.len)
 
@@ -255,19 +252,19 @@ proc previewPane(m: Model, width, height: int): string =
             titleStyle = Style().fg(Accent))
 
 proc view(m: Model): string =
-  if m.width == 0: return "loading…"
-  let bodyHeight = max(m.height - 3, 3)
+  if m.size.width == 0: return "loading…"
+  let bodyHeight = max(m.size.height - 3, 3)
   let header = Style().bold().fg(Accent).render(" " & m.cwd) &
     (if m.showHidden: Style().faint().render("  (showing hidden)") else: "")
 
   # Below 80 columns the preview is dropped rather than squeezed to nothing.
   let body =
-    if m.width < 80:
-      m.listPane(m.width, bodyHeight)
+    if m.size.width < 80:
+      m.listPane(m.size.width, bodyHeight)
     else:
-      let listWidth = max(m.width * 2 div 5, 34)
+      let listWidth = max(m.size.width * 2 div 5, 34)
       joinHorizontal([m.listPane(listWidth, bodyHeight),
-                      m.previewPane(m.width - listWidth, bodyHeight)])
+                      m.previewPane(m.size.width - listWidth, bodyHeight)])
 
   let status =
     if m.status.len == 0: hints({"j/k": "move", "enter": "open",

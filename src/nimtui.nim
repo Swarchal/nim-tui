@@ -48,16 +48,17 @@
 ## * `nimtui/table` — columns that line up
 ## * `nimtui/theme` — a palette and the styles derived from it
 ##
-## Components, which hold state and consume keys:
+## Components, which hold state and consume messages:
 ##
 ## * `nimtui/viewport` — a scrolling window over a list of items
 ## * `nimtui/listview` — a list with a highlighted row
 ## * `nimtui/textarea` — a read-only scrolling pane over wrapped text
 ## * `nimtui/textinput` — a single-line editable field
+## * `nimtui/termsize` — the terminal's size, and the resize branch as one line
 
 import nimtui/[ansi, color, messages, input, style, renderer, tty, query, program,
                spans, layout, widgets, table, theme,
-               viewport, listview, textarea, textinput]
+               viewport, listview, textarea, textinput, termsize]
 export ansi, color, messages, input, style, renderer, tty, query, program
 export spans, layout, widgets, table, theme
-export viewport, listview, textarea, textinput
+export viewport, listview, textarea, textinput, termsize

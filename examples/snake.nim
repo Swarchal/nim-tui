@@ -44,7 +44,7 @@ type
     best: int
     generation: int
     board: tuple[w, h: int]
-    width, height: int
+    size: TermSize
 
 var rng = initRand(0xbeef)
 
@@ -133,11 +133,8 @@ proc boardSize(width, height: int): tuple[w, h: int] =
 proc update(m: Model, msg: Msg): (Model, Cmd) =
   result = (m, nil)
 
-  if msg of WindowSizeMsg:
-    let w = WindowSizeMsg(msg)
-    result[0].width = w.width
-    result[0].height = w.height
-    let board = boardSize(w.width, w.height)
+  if result[0].size.handleResize(msg):
+    let board = boardSize(result[0].size.width, result[0].size.height)
     if board != m.board:
       result[0].board = board
       result[0].reset()
@@ -209,7 +206,7 @@ proc overlay(rows: var seq[string], text: seq[string], width: int) =
           max(width - left - displayWidth(line), 0)))
 
 proc view(m: Model): string =
-  if m.width == 0 or m.snake.len == 0: return "loading…"
+  if m.size.width == 0 or m.snake.len == 0: return "loading…"
   let boardWidth = m.board.w * 2
   var rows = m.boardRows()
 

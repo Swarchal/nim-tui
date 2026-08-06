@@ -208,3 +208,34 @@ suite "mouse tracking options":
     # The bug this replaces: with only two motion levels to choose from, the
     # third state was spelled "leave the mouse off entirely".
     check {poMouseClicks}.mouseTracking().isSome
+
+type Sized = object       ## the `TermSize` convention in an actual update proc
+  size: TermSize
+  reflows: int
+
+proc sizedUpdate(m: Sized, msg: Msg): (Sized, Cmd) =
+  result = (m, nil)
+  if result[0].size.handleResize(msg):
+    result[0].reflows.inc                 # what the new size invalidated
+  elif msg of KeyMsg and $KeyMsg(msg) == "q":
+    result[1] = quitCmd()
+
+suite "the resize branch as one line":
+  ## `tcomponents` covers `handleResize` on its own; this is the shape an
+  ## application copies, driven through the loop it will actually run under.
+
+  test "the size reaches the model and the branch runs":
+    let m = newProgram(Sized(), sizedUpdate, proc (s: Sized): string = $s.size.width)
+      .runHeadless(@[Msg(WindowSizeMsg(width: 100, height: 30))])
+    check m.size == TermSize(width: 100, height: 30)
+    check m.reflows == 1
+
+  test "the elif chain still sees everything else":
+    # The trap in leading with `handleResize`: it has to return false for a key,
+    # or the branch below it never runs and the program cannot be quit.
+    let m = newProgram(Sized(), sizedUpdate, proc (s: Sized): string = $s.size.width)
+      .runHeadless(@[Msg(WindowSizeMsg(width: 100, height: 30)),
+                     Msg(KeyMsg(key: kRune, rune: "q".runeAt(0))),
+                     Msg(WindowSizeMsg(width: 200, height: 60))])
+    check m.reflows == 1                  # quit before the second resize
+    check m.size == TermSize(width: 100, height: 30)

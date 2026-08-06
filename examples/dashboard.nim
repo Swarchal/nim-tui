@@ -47,7 +47,7 @@ type
     samples: int
     paused: bool
     started: MonoTime
-    width, height: int
+    size: TermSize
 
 # --- fake data ----------------------------------------------------------------
 
@@ -78,6 +78,7 @@ proc logTick(): Cmd = after(LogInterval, LogTickMsg())
 
 proc update(m: Model, msg: Msg): (Model, Cmd) =
   result = (m, nil)
+  discard result[0].size.handleResize(msg)
 
   if msg of SpinTickMsg:
     result[0].frame.inc
@@ -99,10 +100,6 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
                                   elapsed: getMonoTime() - m.started)
       if result[0].logs.len > LogLines: result[0].logs.delete 0
     result[1] = logTick()
-
-  elif msg of WindowSizeMsg:
-    result[0].width = WindowSizeMsg(msg).width
-    result[0].height = WindowSizeMsg(msg).height
 
   elif msg of KeyMsg:
     case $KeyMsg(msg)
@@ -182,29 +179,29 @@ proc logPane(m: Model, width, height: int): string =
             borderStyle = Style().faint(), titleStyle = Style().fg(Accent))
 
 proc view(m: Model): string =
-  if m.width == 0: return "loading…"
+  if m.size.width == 0: return "loading…"
   let uptime = (getMonoTime() - m.started).inMilliseconds.float / 1000.0
   let state = if m.paused: Style().fg(WarnColour).render("paused")
               else: Style().fg(Accent).render(spinner(m.frame) & " live")
   let header = Style().bold().render("  nimtui dashboard  ") & state &
     Style().faint().render(&"   {m.samples} samples · up {uptime:.1f}s · " &
-                           &"{m.width}x{m.height}")
+                           &"{m.size.width}x{m.size.height}")
   let footer = " " & hints({"space": "pause", "r": "reset", "q": "quit"})
-  let bodyHeight = max(m.height - 3, 6)
+  let bodyHeight = max(m.size.height - 3, 6)
 
   let body =
-    if m.width < 76:
+    if m.size.width < 76:
       # Narrow: single column, only the first series keeps its chart.
       let top = max(bodyHeight - 8, 5)
-      joinVertical(m.series[0].seriesPane(m.width, top),
-                   m.gaugePane(m.width, bodyHeight - top))
+      joinVertical(m.series[0].seriesPane(m.size.width, top),
+                   m.gaugePane(m.size.width, bodyHeight - top))
     else:
       # `splitWidths` rather than `width div 2` and a remainder by hand. Equal
       # halves are the easy case; the bottom row is 2:3, which is where doing it
       # by hand goes wrong — round each share on its own and the row comes out a
       # column over, which wraps and drags the whole frame out of step.
-      let top = splitWidths(m.width, 2)
-      let bottom = splitWidths(m.width, [2.0, 3.0])
+      let top = splitWidths(m.size.width, 2)
+      let bottom = splitWidths(m.size.width, [2.0, 3.0])
       let topHeight = max(bodyHeight * 3 div 5, 6)
       joinVertical(
         joinHorizontal([m.series[0].seriesPane(top[0], topHeight),

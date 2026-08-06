@@ -42,7 +42,7 @@ type
     fields: seq[Field]
     focus: int
     submitted: bool
-    width, height: int
+    size: TermSize
     theme: Theme
 
 const FormWidth = 54
@@ -92,11 +92,9 @@ proc moveFocus(m: var Model, delta: int) =
 proc update(m: Model, msg: Msg): (Model, Cmd) =
   result = (m, nil)
 
-  if msg of WindowSizeMsg:
-    result[0].width = WindowSizeMsg(msg).width
-    result[0].height = WindowSizeMsg(msg).height
+  discard result[0].size.handleResize(msg)
 
-  elif msg of KeyMsg:
+  if msg of KeyMsg:
     let k = KeyMsg(msg)
 
     if m.submitted:
@@ -175,10 +173,10 @@ proc summary(m: Model): string =
     .render(rows.join("\n"), 44, rows.len + 5)
 
 proc view(m: Model): string =
-  if m.width == 0: return "loading…"
+  if m.size.width == 0: return "loading…"
   let
     t = m.theme
-    w = m.width
+    w = m.size.width
     formW = min(max(w - 4, 20), FormWidth)
 
   var parts: seq[string]
@@ -196,7 +194,7 @@ proc view(m: Model): string =
   # A blank canvas the size of the screen, with the form placed on it — which is
   # how `place` is meant to be used: the base fixes the dimensions, so nothing
   # inside can change the frame's size.
-  let body = place(padBlock("", w, max(m.height - 1, 1)), form)
+  let body = place(padBlock("", w, max(m.size.height - 1, 1)), form)
   let footer = statusBar(
     # Kept short deliberately: `statusBar` drops the centre and then eats into
     # the right segment when the three cannot fit, so an over-long hint list

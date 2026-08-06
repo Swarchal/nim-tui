@@ -30,7 +30,7 @@ type
     matches: seq[int]          ## indices into `ta.wrappedLines`
     matchIdx: int
     mode: Mode
-    width, height: int
+    size: TermSize
     theme: Theme
     status: string
 
@@ -115,19 +115,17 @@ proc nextMatch(m: var Model, delta: int) =
 
 # --- geometry -----------------------------------------------------------------
 
-proc paneHeight(m: Model): int = max(m.height - 2, 3)
+proc paneHeight(m: Model): int = max(m.size.height - 2, 3)
 
 proc relayout(m: var Model) =
-  m.ta.resize(max(m.width - 4, 4), max(m.paneHeight - 4, 1))
+  m.ta.resize(max(m.size.width - 4, 4), max(m.paneHeight - 4, 1))
 
 # --- update -------------------------------------------------------------------
 
 proc update(m: Model, msg: Msg): (Model, Cmd) =
   result = (m, nil)
 
-  if msg of WindowSizeMsg:
-    result[0].width = WindowSizeMsg(msg).width
-    result[0].height = WindowSizeMsg(msg).height
+  if result[0].size.handleResize(msg):
     result[0].relayout()
     # The wrap width changed, so every recorded match index is now stale.
     if result[0].committed.len > 0: result[0].applyQuery()
@@ -183,10 +181,10 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
 # --- view ---------------------------------------------------------------------
 
 proc view(m: Model): string =
-  if m.width == 0: return "loading…"
+  if m.size.width == 0: return "loading…"
   let
     t = m.theme
-    w = m.width
+    w = m.size.width
 
   let header = statusBar(
     " " & gradientText(m.path.lastPathPart, t.ramp, Style().bold()),

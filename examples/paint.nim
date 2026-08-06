@@ -40,12 +40,12 @@ type
     brush: int                ## radius + 1, so 1 is a single cell
     drawing, erasing: bool
     last: tuple[x, y: int]
-    width, height: int
+    size: TermSize
     theme: Theme
     status: string
 
-proc canvasWidth(m: Model): int = max(m.width - 2, 1)
-proc canvasHeight(m: Model): int = max(m.height - 5, 1)
+proc canvasWidth(m: Model): int = max(m.size.width - 2, 1)
+proc canvasHeight(m: Model): int = max(m.size.height - 5, 1)
 
 proc resize(m: var Model) =
   ## Keep whatever has been drawn: growing adds empty cells, shrinking drops the
@@ -89,9 +89,7 @@ proc stroke(m: var Model, x0, y0, x1, y1: int) =
 proc update(m: Model, msg: Msg): (Model, Cmd) =
   result = (m, nil)
 
-  if msg of WindowSizeMsg:
-    result[0].width = WindowSizeMsg(msg).width
-    result[0].height = WindowSizeMsg(msg).height
+  if result[0].size.handleResize(msg):
     result[0].resize()
 
   elif msg of MouseMsg:
@@ -187,10 +185,10 @@ proc canvasBlock(m: Model): string =
   rows.join("\n")
 
 proc view(m: Model): string =
-  if m.width == 0 or m.cells.len == 0: return "loading…"
+  if m.size.width == 0 or m.cells.len == 0: return "loading…"
   let
     t = m.theme
-    w = m.width
+    w = m.size.width
 
   let header = statusBar(
     " " & gradientText("paint", m.gradients[m.gradientIdx], Style().bold()) &

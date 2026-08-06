@@ -82,7 +82,7 @@ type
     scene: Scene
     palette: int
     depth: int             ## index into Ramps: truecolour or 256
-    width, height: int
+    size: TermSize
     anim: float            ## animation clock in seconds, frozen while paused
     paused: bool
     cap: int               ## index into FpsCaps
@@ -276,6 +276,7 @@ proc frameCmd(cap: int): Cmd =
 
 proc update(m: Model, msg: Msg): (Model, Cmd) =
   result = (m, nil)
+  discard result[0].size.handleResize(msg)
 
   if msg of FrameMsg:
     let now = getMonoTime()
@@ -295,10 +296,6 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
     result[0].changed = probeChanged
     result[0].total = probeTotal
     result[1] = frameCmd(m.cap)
-
-  elif msg of WindowSizeMsg:
-    result[0].width = WindowSizeMsg(msg).width
-    result[0].height = WindowSizeMsg(msg).height
 
   elif msg of KeyMsg:
     # Nothing here issues a `frameCmd`: exactly one is in flight at any moment,
@@ -371,10 +368,10 @@ proc header(m: Model, bodyH: int): string =
     tabs = tabBar([$scPlasma, $scFirehose, $scStill], m.scene.ord,
                   activeStyle = Style().bold().fg(Accent))
     right = &"{DepthNames[m.depth]}  {RampNames[m.palette]}  " &
-            &"{m.width}x{m.height}  {state} "
+            &"{m.size.width}x{m.size.height}  {state} "
     throughput =
       case m.scene
-      of scPlasma: si(m.width.float * bodyH.float * 2.0 * fps, "px/s")
+      of scPlasma: si(m.size.width.float * bodyH.float * 2.0 * fps, "px/s")
       of scFirehose: si(m.rate.float * fps, "lines/s")
       of scStill: si(m.changed.float * fps, "lines/s")
 
@@ -397,21 +394,21 @@ proc header(m: Model, bodyH: int): string =
 
   joinVertical(
     statusBar(Style().bold().render(" nimtui bench ") & " " & tabs, "",
-              right, m.width),
-    stats.fit(m.width).render())
+              right, m.size.width),
+    stats.fit(m.size.width).render())
 
 proc view(m: Model): string =
-  if m.width == 0 or m.height < 8: return "sizing…"
-  let bodyH = m.height - 3
+  if m.size.width == 0 or m.size.height < 8: return "sizing…"
+  let bodyH = m.size.height - 3
 
   # Only the scene is timed. The header is a dozen small strings whichever
   # scene is showing, so including it would blur the thing being compared.
   let t0 = getMonoTime()
   let body =
     case m.scene
-    of scPlasma: m.plasmaScene(m.width, bodyH)
-    of scFirehose: m.firehoseScene(m.width, bodyH)
-    of scStill: m.stillScene(m.width, bodyH)
+    of scPlasma: m.plasmaScene(m.size.width, bodyH)
+    of scFirehose: m.firehoseScene(m.size.width, bodyH)
+    of scStill: m.stillScene(m.size.width, bodyH)
   probeNs = (getMonoTime() - t0).inNanoseconds
 
   result = joinVertical(m.header(bodyH), body,

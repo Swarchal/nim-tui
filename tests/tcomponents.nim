@@ -295,3 +295,48 @@ suite "viewport":
     let bottom = Viewport(top: 30, height: 10).scrollbar(40)
     check top[0] == "┃"
     check bottom[^1] == "┃"
+
+suite "term size":
+  ## The bool is the `handleKey` contract applied to a resize, and the value of
+  ## the whole thing is that it means the same as everywhere else in the library.
+
+  test "a window size message is stored and claimed":
+    var s = TermSize()
+    check s.handleResize(WindowSizeMsg(width: 120, height: 40))
+    check s.width == 120
+    check s.height == 40
+
+  test "anything else is left alone, and said not to be ours":
+    var s = TermSize(width: 80, height: 24)
+    check not s.handleResize(KeyMsg(key: kEnter))
+    check not s.handleResize(PasteMsg(text: "hello"))
+    check not s.handleResize(Msg())
+    check s == TermSize(width: 80, height: 24)   # untouched by all three
+
+  test "a later message replaces the size rather than merging into it":
+    var s = TermSize()
+    discard s.handleResize(WindowSizeMsg(width: 120, height: 40))
+    discard s.handleResize(WindowSizeMsg(width: 80, height: 24))
+    check s == TermSize(width: 80, height: 24)
+
+  test "true means the message was ours, not that the size changed":
+    # The two coincide on the real loop, since `syncSize` drops a resize that
+    # reports the size it last reported — but they are different questions and
+    # only one of them is the library-wide meaning of this bool.
+    var s = TermSize(width: 80, height: 24)
+    check s.handleResize(WindowSizeMsg(width: 80, height: 24))
+
+  test "it is zero until something says otherwise":
+    # Not a guessed 80x24: before the terminal has answered, the honest value is
+    # unknown, and a view that divides by a dimension has to clamp either way.
+    var s = TermSize()
+    check s.width == 0
+    check s.height == 0
+
+  test "pixels are not folded in":
+    # A resize is detected from the cell size alone and most terminals report no
+    # pixels at all, so a program that wants them wants the message.
+    var s = TermSize()
+    check s.handleResize(WindowSizeMsg(width: 100, height: 30,
+                                       pixelWidth: 800, pixelHeight: 600))
+    check s == TermSize(width: 100, height: 30)

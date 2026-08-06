@@ -34,7 +34,7 @@ type
     filter: TextInput
     vp: Viewport
     flash: string
-    width, height: int
+    size: TermSize
 
 const Seed = [
   ("write the input decoder", true),
@@ -68,7 +68,7 @@ proc flash(m: var Model, s: string): Cmd =
 
 # --- update -------------------------------------------------------------------
 
-proc listHeight(m: Model): int = max(m.height - 9, 1)
+proc listHeight(m: Model): int = max(m.size.height - 9, 1)
 
 proc clampCursor(m: var Model) =
   let total = m.visibleIndices.len
@@ -152,10 +152,7 @@ proc handleNormalKey(m: var Model, k: KeyMsg): Cmd =
 proc update(m: Model, msg: Msg): (Model, Cmd) =
   result = (m, nil)
 
-  if msg of WindowSizeMsg:
-    let w = WindowSizeMsg(msg)
-    result[0].width = w.width
-    result[0].height = w.height
+  if result[0].size.handleResize(msg):
     result[0].clampCursor()
 
   elif msg of ClearFlashMsg:
@@ -297,10 +294,10 @@ proc inputPane(m: Model, width: int): string =
             borderStyle = Style().fg(Accent))
 
 proc view(m: Model): string =
-  if m.width == 0: return "loading…"
-  let width = min(m.width, 96)
+  if m.size.width == 0: return "loading…"
+  let width = min(m.size.width, 96)
   let inputHeight = if m.mode == mNormal: 0 else: 3
-  let listHeight = max(m.height - 5 - inputHeight, 3)
+  let listHeight = max(m.size.height - 5 - inputHeight, 3)
 
   let header = Style().bold().fg(Accent).render("  things to do") &
     (if m.flash.len > 0: Style().faint().render("   " & m.flash) else: "")

@@ -35,6 +35,9 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
     result[0].push "mouse " & $e.action & " " & $e.button &
                    " at " & $e.x & "," & $e.y
   elif msg of WindowSizeMsg:
+    # The one example that deliberately does not use `TermSize`. Its job is to
+    # show what the message carries, and `TermSize` holds the cells only — the
+    # pixel fields below are exactly what it leaves out.
     let w = WindowSizeMsg(msg)
     result[0].size = (w.width, w.height)
     result[0].pixels = (w.pixelWidth, w.pixelHeight)

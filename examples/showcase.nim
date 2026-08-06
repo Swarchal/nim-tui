@@ -44,7 +44,7 @@ type
     tab: Tab
     themeIndex: int
     frame: int
-    width, height: int
+    size: TermSize
     cpu, mem, net: seq[float]
     services: seq[Service]
     logs: TextArea
@@ -66,8 +66,8 @@ proc theme(m: Model): Theme = Themes[m.themeIndex]
 
 const Chrome = 3          # header, tab strip, footer
 
-proc bodyHeight(m: Model): int = max(m.height - Chrome, 3)
-proc innerWidth(m: Model): int = max(m.width - 4, 4)    # border + padding
+proc bodyHeight(m: Model): int = max(m.size.height - Chrome, 3)
+proc innerWidth(m: Model): int = max(m.size.width - 4, 4)    # border + padding
 proc innerHeight(m: Model): int = max(m.bodyHeight - 4, 1)
 
 proc layout(m: var Model) =
@@ -130,9 +130,7 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
                        st.render(level.toUpperAscii.alignLeft(5)) & " " & text
     result[1] = logCmd()
 
-  elif msg of WindowSizeMsg:
-    result[0].width = WindowSizeMsg(msg).width
-    result[0].height = WindowSizeMsg(msg).height
+  elif result[0].size.handleResize(msg):
     result[0].layout()
 
   elif msg of KeyMsg:
@@ -263,7 +261,7 @@ proc helpDialog(m: Model): string =
     .render(body, 40, 15)
 
 proc view(m: Model): string =
-  if m.width == 0 or m.height == 0: return "loading…"
+  if m.size.width == 0 or m.size.height == 0: return "loading…"
 
   let
     t = m.theme
@@ -272,13 +270,13 @@ proc view(m: Model): string =
     status = t.accentStyle.render(spinner(m.frame) & " live")
     header = statusBar(title & status, "",
                        t.mutedStyle.render(
-                         &"{ThemeNames[m.themeIndex]} · {m.width}x{m.height} · " &
+                         &"{ThemeNames[m.themeIndex]} · {m.size.width}x{m.size.height} · " &
                          &"up {uptime.int}s "),
-                       m.width)
+                       m.size.width)
 
   var labels: seq[string]
   for tab in Tab: labels.add $tab
-  let tabs = tabBar(labels, ord(m.tab), m.width,
+  let tabs = tabBar(labels, ord(m.tab), m.size.width,
                     activeStyle = Style().bold().fg(t.selectionFg).bg(t.accent),
                     inactiveStyle = t.mutedStyle)
 
@@ -295,11 +293,11 @@ proc view(m: Model): string =
     .pad(1)
     .styled(border = t.activeBorderStyle, title = t.titleStyle,
             footer = t.mutedStyle)
-    .render(body, m.width, m.bodyHeight)
+    .render(body, m.size.width, m.bodyHeight)
 
   let footer = statusBar(
     " " & hints({"tab": "switch", "t": "theme", "?": "keys", "q": "quit"}),
-    "", t.mutedStyle.render($m.tab & " "), m.width)
+    "", t.mutedStyle.render($m.tab & " "), m.size.width)
 
   let frame = joinVertical(header, tabs, pane, footer)
   # The dialog goes on last, over the finished frame: `place` keeps the frame's

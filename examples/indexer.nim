@@ -54,7 +54,7 @@ type
     log: seq[string]
     list: ListView
     frame: int
-    width, height: int
+    size: TermSize
     started, finished: MonoTime
     theme: Theme
 
@@ -116,10 +116,8 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
     else:
       result[1] = workCmd(m.gen)
 
-  elif msg of WindowSizeMsg:
-    result[0].width = WindowSizeMsg(msg).width
-    result[0].height = WindowSizeMsg(msg).height
-    result[0].list.vp.height = max(result[0].height - 12, 1)
+  elif result[0].size.handleResize(msg):
+    result[0].list.vp.height = max(result[0].size.height - 12, 1)
     result[0].list.sync result[0].log.len
 
   elif msg of KeyMsg:
@@ -141,10 +139,10 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
 # --- view ---------------------------------------------------------------------
 
 proc view(m: Model): string =
-  if m.width == 0: return "loading…"
+  if m.size.width == 0: return "loading…"
   let
     t = m.theme
-    w = m.width
+    w = m.size.width
     frac = m.done / Total
     secs = m.elapsed.inMilliseconds.float / 1000.0
     rate = if secs > 0.01: m.done.float / secs else: 0.0
@@ -173,7 +171,7 @@ proc view(m: Model): string =
     .styled(border = t.borderStyle, title = t.titleStyle)
     .render(rows.join("\n"), w, 8)
 
-  let listHeight = max(m.height - 10, 3)
+  let listHeight = max(m.size.height - 10, 3)
   let body = panel(RoundedBorder)
     .title(" indexed ")
     .footer(if m.log.len == 0: " nothing yet " else: &" {m.log.len} files ")
