@@ -333,10 +333,14 @@ proc fillBlock*(s: string, style: Style, width = -1, height = -1): string =
   ## Each line is styled separately, never the joined block, because the
   ## renderer erases to the end of each line it rewrites: a background left open
   ## across a newline is smeared to the right-hand edge of the screen.
+  ##
+  ## `renderOver` rather than `render`, since `s` has usually been styled by the
+  ## caller already and a reset in it would otherwise end the fill: `style` is
+  ## the floor the content's own styling falls back to.
   let lines = padBlockLines(s, width, height)
   if style.isEmpty: return lines.join("\n")
   var rows = newSeqOfCap[string](lines.len)
-  for line in lines: rows.add style.render(line)
+  for line in lines: rows.add style.renderOver(line)
   rows.join("\n")
 
 proc shadow*(s: string, style = Style().faint(), glyph = "░"): string =
@@ -503,7 +507,11 @@ proc borderRow(p: Panel, left, right, label: string, labelStyle: Style,
            of aRight: inner - tw - 1
     lo = clamp(lead, 0, inner - tw)
   result = p.borderStyle.render(left & h.repeat(lo))
-  result.add labelStyle.render(t)
+  # `renderOver` for the same reason the fill uses it: a highlight inside a title
+  # ends `labelStyle` for the rest of the label, including the space that pads it
+  # off the border. Styling the runs separately protects the *border* from that
+  # reset, not the label from its own.
+  result.add labelStyle.renderOver(t)
   result.add p.borderStyle.render(h.repeat(inner - tw - lo) & right)
 
 proc render*(p: Panel, content: string, width, height: int): string =
@@ -541,7 +549,10 @@ proc render*(p: Panel, content: string, width, height: int): string =
   template row(cells: string) =
     res.add '\n'
     res.add v
-    res.add(if p.fillStyle.isEmpty: cells else: p.fillStyle.render(cells))
+    # `renderOver`: the body arrives pre-styled as a matter of course, and a
+    # reset in it ends the fill's background for every column after it — the pad
+    # to the right of a styled line comes out bare. The fill is the floor.
+    res.add(if p.fillStyle.isEmpty: cells else: p.fillStyle.renderOver(cells))
     res.add v
 
   for _ in 0 ..< vpad: row(blank)

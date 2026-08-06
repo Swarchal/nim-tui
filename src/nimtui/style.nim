@@ -213,11 +213,10 @@ proc sgr*(s: Style): string =
   ## `sgr <#sgr,Style,ColorProfile>`_ under the profile set at startup.
   s.sgr(colorProfile())
 
-proc render*(s: Style, text: string, profile: ColorProfile): string =
-  ## Wrap `text` in `s`. Each line is wrapped separately so that the renderer's
-  ## per-line erase cannot smear a background colour across the screen.
-  let on = s.sgr(profile)
-  if on.len == 0: return text
+proc wrapWith(text, on: string): string =
+  ## `text` under the already-assembled `on`, a line at a time. Split out so
+  ## `render` and `renderOver` cannot come to disagree about the framing, and so
+  ## neither has to assemble `on` twice.
   let firstNl = text.find('\n')
   if firstNl < 0:
     # One line, which is nearly every call: three whole-string appends into one
@@ -241,7 +240,52 @@ proc render*(s: Style, text: string, profile: ColorProfile): string =
       result.add '\n'
       start = stop + 1
 
+proc render*(s: Style, text: string, profile: ColorProfile): string =
+  ## Wrap `text` in `s`. Each line is wrapped separately so that the renderer's
+  ## per-line erase cannot smear a background colour across the screen.
+  ##
+  ## A reset already in `text` ends `s` too, and everything after it is unstyled.
+  ## When `text` may arrive pre-styled — a panel's fill, a table cell — use
+  ## `renderOver <#renderOver,Style,string,ColorProfile>`_ instead.
+  let on = s.sgr(profile)
+  if on.len == 0: return text
+  wrapWith(text, on)
+
+proc renderOver*(s: Style, text: string, profile: ColorProfile): string =
+  ## `render <#render,Style,string,ColorProfile>`_ with `s` re-armed after every
+  ## reset already in `text` — `s` is the floor, and styling the content turned
+  ## on ends by falling back to it rather than to nothing.
+  ##
+  ## This is what a *container's* style wants. A reset clears everything, so
+  ## without re-arming, a fill is painted only as far as the first reset in the
+  ## text it is filling behind and every column after that comes out bare: the
+  ## right number of columns in the wrong colour, which no dimensional assertion
+  ## catches. Text arriving pre-styled is the normal case for a container —
+  ## `Panel`'s fill sits behind a body the caller has already coloured.
+  ##
+  ## `merge <#merge,Style,Style>`_ is the wrong tool for this despite looking
+  ## like the right one: it composes two `Style` *values*, and by the time the
+  ## content is a string its styling is escape sequences, not a value any more.
+  let on = s.sgr(profile)
+  if on.len == 0: return text
+  # Two guards, and the cheap one is first. `replace` allocates a second copy of
+  # the string even when it matches nothing, so the common case — text with no
+  # escapes in it at all — has to be kept off that path entirely. `Reset in text`
+  # alone would do it, but it is a four-byte substring search over the whole
+  # string on a path that runs once per row per frame; a `Reset` cannot occur
+  # without an `ESC`, so scanning for that one byte first is the same answer for
+  # ~1/5 of the cost. Measured: 31 ns against 6 ns on a 29-byte line.
+  if text.find('\e') >= 0 and Reset in text:
+    wrapWith(text.replace(Reset, Reset & on), on)
+  else:
+    wrapWith(text, on)
+
 proc render*(s: Style, text: string): string =
   ## `render <#render,Style,string,ColorProfile>`_ under the profile set at
   ## startup.
   s.render(text, colorProfile())
+
+proc renderOver*(s: Style, text: string): string =
+  ## `renderOver <#renderOver,Style,string,ColorProfile>`_ under the profile set
+  ## at startup.
+  s.renderOver(text, colorProfile())

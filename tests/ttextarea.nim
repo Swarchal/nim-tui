@@ -187,3 +187,17 @@ suite "textarea position label":
     check ta.positionLabel == "bot"
     ta.scrollBy(-40)
     check ta.positionLabel.endsWith("%")
+
+suite "textarea line style":
+  ## A pager's content is the pre-styled case by definition — a diff, a
+  ## colourised log — so `lineStyle` has to be the floor those escapes fall back
+  ## to rather than something the first of them cancels.
+  test "lineStyle survives a reset in the text":
+    let ls = Style().bg(ansiColor(4))
+    var ta = initTextArea(width = 20, height = 3)
+    ta.lineStyle = ls
+    ta.setText Style().bold().render("hi") & " there"
+    let pane = ta.render()
+    check (Reset & ls.sgr()) in pane
+    for line in pane.split('\n'):
+      check displayWidth(line) == 20

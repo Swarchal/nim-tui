@@ -155,6 +155,36 @@ suite "panel":
     for line in box.split('\n'):
       check displayWidth(line) == 20
 
+  test "a fill survives a reset in the body it fills behind":
+    # The body is pre-styled, which is the normal case — a panel wraps content
+    # the caller has already coloured. `Style.render` closes with a reset, so
+    # without `renderOver` the fill ends at the body's own reset and every pad
+    # column after it comes out bare: the geometry above still passes, and the
+    # panel is visibly half-filled. Same failure class as 9458a8b, one level up.
+    let fill = Style().bg(rgb(0, 0, 180))
+    let box = panel().styled(fill = fill).render(Style().fg(hex"#ffffff").render("hi"),
+                                                 14, 3)
+    check (Reset & fill.sgr()) in box
+    for line in box.split('\n'):
+      check displayWidth(line) == 14
+
+  test "fillBlock survives a reset in its content too":
+    let fill = Style().bg(rgb(0, 0, 180))
+    let b = fillBlock(Style().fg(hex"#ffffff").render("hi"), fill, 10, 2)
+    check (Reset & fill.sgr()) in b
+    for line in b.split('\n'):
+      check displayWidth(line) == 10
+
+  test "a pre-styled title keeps its style to the end of the label":
+    # A highlight inside a title ends `titleStyle` for the rest of it, the space
+    # that pads it off the border included.
+    let ts = Style().bold().fg(rgb(255, 200, 0))
+    let box = panel().title("a" & Style().reverse().render("b") & "c")
+                     .styled(title = ts).render("body", 20, 3)
+    check (Reset & ts.sgr()) in box
+    for line in box.split('\n'):
+      check displayWidth(line) == 20
+
   test "a shadow grows the block by exactly one column and row":
     let plain = panel().render("body", 20, 6)
     let shadowed = panel().shadow().render("body", 20, 6)

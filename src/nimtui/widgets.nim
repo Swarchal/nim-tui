@@ -282,4 +282,8 @@ proc statusBar*(left, center, right: string, width: int,
   let start = clamp((width - cw) div 2, lw, max(width - rw - cw, lw))
   result = l & spaces(max(start - lw, 0)) & c &
            spaces(max(width - rw - start - cw, 0)) & r
-  if not style.isEmpty: result = style.render(result)
+  # `renderOver`, since the three segments are the caller's and a status bar
+  # segment is one of the likeliest things in the library to arrive already
+  # coloured. Under `render` a reset in `left` ends the bar's background for
+  # every column after it, which reads as the bar stopping half way across.
+  if not style.isEmpty: result = style.renderOver(result)

@@ -216,7 +216,12 @@ proc render*(ta: TextArea): string =
     if ta.xOffset > 0: line = sliceVisible(line, ta.xOffset, w)
     elif displayWidth(line) > w: line = truncateVisible(line, w)
     line = padVisible(line, w)
-    rows[i] = if ta.lineStyle.isEmpty: line else: ta.lineStyle.render(line)
+    # `renderOver`: a pager's content is exactly the pre-styled case — a diff, a
+    # colourised log — and `sliceVisible` above re-emits the escapes it scanned
+    # past, so a scrolled line carries them even when the source line did not
+    # start with one. Under `render` a reset in the text ends `lineStyle` for the
+    # rest of the row, pad included.
+    rows[i] = if ta.lineStyle.isEmpty: line else: ta.lineStyle.renderOver(line)
   if ta.showScrollbar:
     rows = ta.vp.withScrollbar(rows, ta.wrapped.len, ta.scrollbarStyle)
   rows.join("\n")

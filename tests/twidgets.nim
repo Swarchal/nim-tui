@@ -159,3 +159,13 @@ suite "a status bar is one bar":
     # A tab is zero columns to `displayWidth` and eight to the terminal, so an
     # unflattened one overflows the bar rather than merely looking wrong.
     check displayWidth(statusBar("a\tb", "c", "d", 30)) == 30
+
+  test "the bar's own style survives a reset in a segment":
+    # A coloured segment is the ordinary case here — a mode indicator, a dirty
+    # marker. Its reset ends the bar's background too, so without `renderOver`
+    # the bar stops at the first styled segment and the rest of the row is bare,
+    # which the width checks above cannot see.
+    let bg = Style().bg(ansiColor(4))
+    let bar = statusBar(Style().bold().render("NORMAL"), "", "12:04", 40, bg)
+    check (Reset & bg.sgr()) in bar
+    check displayWidth(bar) == 40

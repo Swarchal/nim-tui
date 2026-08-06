@@ -47,6 +47,53 @@ suite "render":
   test "styled text keeps its visible width":
     check displayWidth(Style().bold().fg(rgb(1, 2, 3)).render("hello")) == 5
 
+suite "renderOver":
+  ## A container's style has to survive a reset in the content it contains. The
+  ## failure this pins is invisible to a dimensional assertion — the right number
+  ## of columns in the wrong colour — so these check the bytes.
+  const
+    fill = Style().bg(ansiColor(4))
+    inner = Style().fg(ansiColor(7))
+
+  test "the container is re-armed after a reset in the content":
+    # `"hi"` styled by the caller, then padded: exactly what a panel fill is
+    # handed. Under `render` the eight pad columns come out bare.
+    let content = inner.render("hi", cpAnsi256) & "        "
+    let over = fill.renderOver(content, cpAnsi256)
+    check (Reset & fill.sgr(cpAnsi256)) in over
+    check over.count(fill.sgr(cpAnsi256)) == 2   # opened once, re-armed once
+    check over.endsWith(Reset)
+
+  test "every reset is re-armed, not only the first":
+    let content = inner.render("a", cpAnsi256) & inner.render("b", cpAnsi256)
+    check fill.renderOver(content, cpAnsi256).count(fill.sgr(cpAnsi256)) == 3
+
+  test "identical to render when the content carries no reset":
+    check fill.renderOver("hi", cpAnsi256) == fill.render("hi", cpAnsi256)
+
+  test "an empty container is a no-op, reset in the content or not":
+    let content = inner.render("hi", cpAnsi256)
+    check Style().renderOver(content, cpAnsi256) == content
+    check Style().renderOver("hi", cpAnsi256) == "hi"
+
+  test "a colour-only container is a no-op under cpNoColor":
+    # `sgr` returns "" rather than "\e[m" there, so there is nothing to re-arm —
+    # and re-arming a bare reset would be worse than not styling at all.
+    let content = inner.render("hi", cpNoColor)
+    check fill.renderOver(content, cpNoColor) == content
+
+  test "each line is still wrapped separately so backgrounds cannot smear":
+    let content = inner.render("a", cpAnsi256) & "\n" & inner.render("b", cpAnsi256)
+    let over = fill.renderOver(content, cpAnsi256)
+    check over.splitLines.len == 2
+    for line in over.splitLines:
+      check line.startsWith(fill.sgr(cpAnsi256))
+      check line.endsWith(Reset)
+
+  test "re-arming costs no columns":
+    let content = inner.render("hi", cpAnsi256) & "     "
+    check displayWidth(fill.renderOver(content, cpAnsi256)) == 7
+
 suite "colour profiles":
   # Every case here goes through the explicit `sgr(s, profile)` overload rather
   # than setting the module-level one. That is the convention for this file: the
