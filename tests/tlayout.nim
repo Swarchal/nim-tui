@@ -285,6 +285,47 @@ suite "compositing":
       check displayWidth(line) == 21
     check composed.split('\n')[3].stripAnsi == ".........###........."
 
+  test "each corner and edge is reachable, and says which it is":
+    # The reason `VAlign` exists: this used to read `place(base, top, aLeft,
+    # aRight)` for "bottom left", with the vertical member borrowed off the
+    # horizontal enum. Every combination is asserted because the two axes are now
+    # different types, and a transposed pair no longer compiles rather than
+    # silently placing the block somewhere else.
+    let base = padBlock((".".repeat(9) & "\n").repeat(5), 9, 5)
+    let top = "##"
+    proc at(h: Align, v: VAlign): tuple[row, col: int] =
+      let lines = place(base, top, h, v).split('\n')
+      for i, line in lines:
+        let col = line.stripAnsi.find("##")
+        if col >= 0: return (i, col)
+      (-1, -1)
+
+    check at(aLeft, vaTop) == (0, 0)
+    check at(aCenter, vaTop) == (0, 3)
+    check at(aRight, vaTop) == (0, 7)
+    check at(aLeft, vaMiddle) == (2, 0)
+    check at(aCenter, vaMiddle) == (2, 3)
+    check at(aRight, vaMiddle) == (2, 7)
+    check at(aLeft, vaBottom) == (4, 0)
+    check at(aCenter, vaBottom) == (4, 3)
+    check at(aRight, vaBottom) == (4, 7)
+
+  test "the default is dead centre on both axes":
+    let base = padBlock((".".repeat(9) & "\n").repeat(5), 9, 5)
+    check place(base, "##") == place(base, "##", aCenter, vaMiddle)
+
+  test "an alignment never moves the block outside the base":
+    # Both extremes clamp at zero rather than going negative, which `overlay`
+    # would take as an offset into the line.
+    let base = padBlock("...\n...", 3, 2)
+    for h in Align:
+      for v in VAlign:
+        let composed = place(base, "#####\n#####\n#####", h, v)
+        checkpoint $h & " " & $v
+        check blockHeight(composed) == 2
+        for line in composed.split('\n'):
+          check displayWidth(line) == 3
+
   test "an oversized overlay is clipped, not allowed to grow the base":
     let base = padBlock(".....\n.....\n.....", 5, 3)
     let composed = overlay(base, "#".repeat(40) & "\n" & "#".repeat(40), 0, 0)

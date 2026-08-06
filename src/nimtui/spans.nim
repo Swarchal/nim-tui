@@ -36,7 +36,26 @@ type
     ## Where content sits within a wider field. Declared here because this is
     ## the lowest layer that needs it; `nimtui/layout <layout.html>`_ re-exports
     ## it for titles and table columns.
+    ##
+    ## Horizontal only. The vertical axis has `VAlign`_, and the two are separate
+    ## types rather than one shared three-member enum so that neither can be
+    ## passed where the other belongs.
     aLeft, aCenter, aRight
+
+  VAlign* = enum
+    ## Where content sits within a taller field, for `layout.place`.
+    ##
+    ## `Align` used to serve both axes, on the grounds that either way it is three
+    ## positions and a `div 2`. What that cost was legibility at the call site,
+    ## and only there: `place(base, top, aCenter, aLeft)` means "top centre", and
+    ## no reader gets it right first time. It is the kind of thing a comment can
+    ## only apologise for — `layout` carried one reading `aLeft doubles as "top"
+    ## on this axis` — where a type can prevent it.
+    ##
+    ## Beside `Align` rather than in `layout` because this is where `Align` is,
+    ## and the reason is the same: the lowest layer that needs it, re-exported
+    ## upward.
+    vaTop, vaMiddle, vaBottom
 
   Span* = object
     text*: string

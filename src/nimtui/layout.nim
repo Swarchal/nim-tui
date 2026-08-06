@@ -35,8 +35,8 @@ import std/[strutils, algorithm]
 import ./[ansi, style, spans]
 # `renderBox` takes `Style` values, so a caller importing only this module still
 # needs them — re-exported for the same reason `ansi` re-exports `width`.
-# `spans` comes with it for `Align`, and because a styled line is the natural
-# thing to hand to a block helper.
+# `spans` comes with it for `Align` and `VAlign`, and because a styled line is
+# the natural thing to hand to a block helper.
 export style, spans
 
 type
@@ -401,9 +401,14 @@ proc overlay*(base, top: string, x, y: int): string =
     lines[row] = left & Reset & clipped & Reset & right
   lines.join("\n")
 
-proc place*(base, top: string, hAlign = aCenter, vAlign = aCenter): string =
+proc place*(base, top: string, hAlign = aCenter, vAlign = vaMiddle): string =
   ## `overlay` with the position worked out from an alignment instead of
   ## coordinates — the usual way to put a dialog in the middle of a frame.
+  ##
+  ## The two axes take different types — `Align <spans.html#Align>`_ and
+  ## `VAlign <spans.html#VAlign>`_, both re-exported here — so that
+  ## `place(base, top, aCenter, vaTop)` says what it does. `vAlign` was an `Align`
+  ## until the third member of that enum had to be read as "bottom".
   let
     bw = blockWidth(base)
     bh = blockHeight(base)
@@ -414,9 +419,9 @@ proc place*(base, top: string, hAlign = aCenter, vAlign = aCenter): string =
         of aCenter: (bw - tw) div 2
         of aRight: bw - tw
     y = case vAlign
-        of aLeft: 0                    # aLeft doubles as "top" on this axis
-        of aCenter: (bh - th) div 2
-        of aRight: bh - th
+        of vaTop: 0
+        of vaMiddle: (bh - th) div 2
+        of vaBottom: bh - th
   overlay(base, top, max(x, 0), max(y, 0))
 
 # --- panels -------------------------------------------------------------------
