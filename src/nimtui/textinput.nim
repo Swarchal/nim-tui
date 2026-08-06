@@ -37,6 +37,32 @@ proc insert*(ti: var TextInput, r: Rune) =
   ti.runes.insert(r, ti.cursor)
   ti.cursor.inc
 
+proc insert*(ti: var TextInput, s: string) =
+  ## Insert `s` at the cursor in one move — what a paste arrives as.
+  ##
+  ## Control characters become spaces, escapes included. This is CLAUDE.md's
+  ## flatten-before-you-measure rule at the one boundary that owns runes rather
+  ## than strings, which is also why `ansi.oneLine` is the wrong tool: it
+  ## preserves escape sequences, and an `ESC` sitting in `runes` is not styling —
+  ## it is a rune that `render` counts as a column and the terminal draws as
+  ## nothing, so the field comes out narrow. A space rather than nothing, for
+  ## `oneLine`'s reason: dropping a newline runs the last word of one line into
+  ## the first of the next.
+  var rs = newSeqOfCap[Rune](s.len)
+  for r in s.runes:
+    rs.add(if r.isControl: Rune(' ') else: r)
+  if rs.len == 0: return
+  # One shift of the tail, not one per rune. `seq.insert` moves everything after
+  # the cursor for each rune inserted, which on a 4 KB paste is millions of
+  # moves — the quadratic half of the bug bracketed paste exists to fix.
+  let old = ti.runes.len
+  ti.runes.setLen old + rs.len
+  if old > ti.cursor:
+    moveMem(addr ti.runes[ti.cursor + rs.len], addr ti.runes[ti.cursor],
+            (old - ti.cursor) * sizeof(Rune))
+  for i, r in rs: ti.runes[ti.cursor + i] = r
+  ti.cursor += rs.len
+
 proc isWordRune(r: Rune): bool =
   not r.isWhiteSpace
 
@@ -90,6 +116,22 @@ proc handleKey*(ti: var TextInput, k: KeyMsg): bool =
       ti.insert k.rune
     else:
       result = false
+
+proc handle*(ti: var TextInput, msg: Msg): bool =
+  ## `handleKey <#handleKey,TextInput,KeyMsg>`_ widened to any message, so a
+  ## field picks up pasted text without every caller having to remember to wire
+  ## it. Same contract: false means the message meant nothing here.
+  ##
+  ## Only `TextInput` has one. `Viewport`, `ListView` and `TextArea` consume no
+  ## text, so for them this would never do anything `handleKey` does not — a
+  ## deliberate omission rather than one to fill in later.
+  if msg of PasteMsg:
+    ti.insert PasteMsg(msg).text
+    true
+  elif msg of KeyMsg:
+    ti.handleKey KeyMsg(msg)
+  else:
+    false
 
 proc render*(ti: TextInput, width: int, focused = true): string =
   ## Draw the field, scrolling horizontally to keep the cursor in view. The

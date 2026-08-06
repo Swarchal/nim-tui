@@ -5,8 +5,11 @@
 ## `q` and what keeps `j`/`k` from being typed into a task title. The text input
 ## reports whether it consumed a key, so `enter` and `esc` stay with the caller.
 ##
-## Also shows: transient status messages that expire via `after`, and a filtered
-## view where the cursor tracks the *filtered* list rather than the underlying one.
+## Also shows: transient status messages that expire via `after`, a filtered
+## view where the cursor tracks the *filtered* list rather than the underlying
+## one, and `poBracketedPaste` — this is the example the missing paste support
+## broke, since a pasted newline arriving as `kEnter` commits the entry halfway
+## through the paste.
 ##
 ##   nim c -r --path:src examples/todo.nim
 
@@ -40,7 +43,7 @@ const Seed = [
   ("decide whether commands should be async", false),
   ("add a viewport widget", false),
   ("double-width character support in displayWidth", false),
-  ("bracketed paste", false),
+  ("bracketed paste", true),
   ("windows support", false),
 ]
 
@@ -157,6 +160,19 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
 
   elif msg of ClearFlashMsg:
     result[0].flash = ""
+
+  elif msg of PasteMsg:
+    # The whole paste in one insert, and the newlines in it stay text. Without
+    # `poBracketedPaste` this arrives as its characters typed one at a time, and
+    # the first pasted newline is `kEnter` — which commits the entry half way
+    # through the paste.
+    case m.mode
+    of mAdding, mEditing: discard result[0].input.handle(msg)
+    of mFiltering:
+      if result[0].filter.handle(msg):
+        result[0].cursor = 0
+        result[0].clampCursor()
+    of mNormal: discard
 
   elif msg of KeyMsg:
     let k = KeyMsg(msg)
@@ -308,4 +324,5 @@ when isMainModule:
   for (title, done) in Seed:
     model.tasks.add Task(title: title, done: done)
   discard newProgram(model, update, view,
-                     options = {poAltScreen, poHideCursor}).run()
+                     options = {poAltScreen, poHideCursor,
+                                poBracketedPaste}).run()

@@ -6,8 +6,21 @@
 ## and retries once more bytes arrive. This is what makes key handling testable
 ## without a terminal.
 
-import std/unicode
+import std/[unicode, strutils]
 import ./[ansi, messages]
+
+const MaxPasteBytes* = 1 shl 20
+  ## How much of an unterminated paste payload is held before it is given up on
+  ## and delivered as it stands.
+  ##
+  ## A bound on the damage a forged or runaway start marker can do, not a limit
+  ## on how much anyone may paste: truncating a legitimate paste would be the
+  ## worse bug of the two, so this sits far above anything a human pastes through
+  ## a terminal and far below anything that is a memory problem.
+  ##
+  ## It does not bound a *stalled* paste, and cannot — a start marker with
+  ## nothing behind it produces no further bytes to hit any byte cap. That case
+  ## is the caller's to time out; see `parseInput <#parseInput,string>`_.
 
 proc decodeMods*(param: int): set[Modifier] =
   ## Decode an xterm modifier parameter (1 = none, 2 = shift, 5 = ctrl, ...).
@@ -126,7 +139,57 @@ proc parseCsi(buf: string, start: int): tuple[msg: Msg, len: int] =
   else:
     return (nil, used)                          # unrecognised but well-formed
 
-proc parseOne(buf: string, i: int, flushEsc: bool): tuple[msg: Msg, len: int] =
+proc parsePaste(buf: string, i: int, flushPaste: bool): tuple[msg: Msg, len: int] =
+  ## `buf[i]` begins a complete `PasteStart`. Everything up to `PasteEnd` is
+  ## payload, and the same three-state return applies.
+  ##
+  ## Note what does *not* end the scan: a bare `ESC`. That is the deliberate
+  ## divergence from the string-sequence branch in `parseOne`, which treats one
+  ## as a sequence started inside a malformed one — a reader will assume the two
+  ## agree, and they must not. A string payload is protocol, so an `ESC` in it
+  ## means something is wrong; a paste payload is *user data*, and pasted config
+  ## files, terminal captures and shell scripts contain escapes as a matter of
+  ## course. Only a literal `PasteEnd` ends a paste.
+  var j = i + PasteStart.len
+  while j + PasteEnd.len <= buf.len:
+    # The `Esc` test first so the common byte costs a comparison rather than a
+    # `continuesWith` call.
+    if buf[j] == Esc and buf.continuesWith(PasteEnd, j):
+      return (Msg(PasteMsg(text: buf[i + PasteStart.len ..< j])),
+              j - i + PasteEnd.len)
+    inc j
+
+  # Off the end of the buffer with no terminator. Held whether or not the caller
+  # flushed, which is the one place that reasoning inverts: every other partial
+  # sequence is short and bounded, so a read timing out mid-sequence proves the
+  # rest is never coming, while a paste payload is arbitrarily large and a read
+  # timing out mid-payload — a slow link, tmux relaying a big buffer — is
+  # ordinary. `flushEsc` is therefore not a parameter here at all.
+  #
+  # What does end the hold is `flushPaste`, which the caller raises once no byte
+  # has arrived for a while, or the payload growing past `MaxPasteBytes`. Both
+  # are needed: the byte cap bounds a runaway stream, and nothing but the
+  # timeout bounds a stalled one — a literally typed `PasteStart` with nothing
+  # behind it never grows, so it would otherwise be held forever and absorb
+  # whatever was typed next, which is exactly the stall `flushEsc` exists to
+  # prevent, reintroduced somewhere new.
+  if flushPaste or buf.len - i - PasteStart.len > MaxPasteBytes:
+    # Delivered as a paste rather than dropped or re-typed. Dropping silently
+    # eats up to a megabyte of what may be real input; resolving to `ESC` and
+    # letting the rest decode as keys — the rule everywhere else here — would
+    # type the whole payload into whatever has focus, which is the precise
+    # failure bracketed paste exists to prevent, amplified. A start marker with
+    # an unterminated payload behind it is most likely a paste whose end marker
+    # was lost, and a `PasteMsg` is the least destructive form those bytes can
+    # take: a recipient inserts them, everyone else ignores them.
+    #
+    # One edge, since the bytes are taken as they lie: a buffer ending part way
+    # through the terminator when the timeout fires puts those bytes in `text`.
+    return (Msg(PasteMsg(text: buf[i + PasteStart.len ..< buf.len])), buf.len - i)
+  (nil, 0)
+
+proc parseOne(buf: string, i: int, flushEsc: bool, flushPaste: bool):
+    tuple[msg: Msg, len: int] =
   ## Decode the single event starting at `buf[i]`.
   ##
   ## `len == 0` means the sequence is incomplete and nothing was consumed.
@@ -149,6 +212,25 @@ proc parseOne(buf: string, i: int, flushEsc: bool): tuple[msg: Msg, len: int] =
       return incomplete()
     case buf[i + 1]
     of '[':
+      # Both markers are checked before `parseCsi`, not inside it. `parseCsi`
+      # reports lengths relative to the byte after `ESC [`, so it cannot express
+      # "consume one byte, the ESC" — the flush contract has to be applied where
+      # the `+ 2` is, which is here. And a paste is not CSI-shaped anyway: it is
+      # an arbitrary-length payload ending at a terminator, the same shape as the
+      # string sequences below, which is why it sits beside them.
+      if buf.continuesWith(PasteStart, i):
+        return parsePaste(buf, i, flushPaste)
+      if buf.continuesWith(PasteEnd, i):
+        # An end marker with no start: a paste this parser already gave up on, or
+        # one whose beginning was lost. Consumed and dropped, which is what the
+        # unrecognised-CSI path does with it today by accident — said out loud
+        # here so adding `of 201:` to the `~` case cannot quietly change it.
+        return (nil, PasteEnd.len)
+      # A *partial* start marker is not recognised: `\e[200` falls through and is
+      # held, or flushed to `esc` `[` `2` `0` `0`, exactly as before. The case
+      # that misses — a terminal stalling inside the six-byte introducer — is not
+      # one that happens, since a terminal emits the marker and some payload in
+      # the same write.
       let (m, n) = parseCsi(buf, i + 2)
       return if n == 0: incomplete() else: (m, n + 2)
     of 'O':                                     # SS3: application cursor/function keys
@@ -206,7 +288,7 @@ proc parseOne(buf: string, i: int, flushEsc: bool): tuple[msg: Msg, len: int] =
         # likely alt+`]` than a reply that stalled after two bytes. Reported the
         # way the branch below would, since that is the behaviour this is
         # preserving.
-        let (m, n) = parseOne(buf, i + 1, flushEsc)
+        let (m, n) = parseOne(buf, i + 1, flushEsc, flushPaste)
         if n > 0 and m != nil and m of KeyMsg: KeyMsg(m).mods.incl mAlt
         return (m, n + 1)
       # A payload that will never be terminated. Swallowed rather than resolved
@@ -219,7 +301,7 @@ proc parseOne(buf: string, i: int, flushEsc: bool): tuple[msg: Msg, len: int] =
       return (Msg(KeyMsg(key: kEsc)), 1)
     else:
       # ESC + key is how terminals report alt-modified keys.
-      let (m, n) = parseOne(buf, i + 1, flushEsc)
+      let (m, n) = parseOne(buf, i + 1, flushEsc, flushPaste)
       if n == 0: return incomplete()
       if m != nil and m of KeyMsg: KeyMsg(m).mods.incl mAlt
       return (m, n + 1)
@@ -244,15 +326,32 @@ proc parseOne(buf: string, i: int, flushEsc: bool): tuple[msg: Msg, len: int] =
     fastRuneAt(buf, j, r, true)
     return (Msg(KeyMsg(key: kRune, rune: r)), j - i)
 
-proc parseInput*(buf: string, flushEsc = false): tuple[msgs: seq[Msg], consumed: int] =
+proc parseInput*(buf: string, flushEsc = false, flushPaste = false):
+    tuple[msgs: seq[Msg], consumed: int] =
   ## Decode as many events as `buf` fully contains.
   ##
   ## Pass `flushEsc = true` when the read timed out, so that a trailing lone
   ## `ESC` is reported as the Escape key instead of being held indefinitely.
+  ##
+  ## Pass `flushPaste = true` when the read has timed out *repeatedly* — no byte
+  ## at all for far longer than an escape sequence takes — so that a paste
+  ## payload with no end marker behind it is delivered rather than held forever.
+  ## The two are separate deliberately: `flushEsc` fires after a few tens of
+  ## milliseconds, which is nothing at all in the middle of a real paste.
   var i = 0
   while i < buf.len:
-    let (m, n) = parseOne(buf, i, flushEsc)
+    let (m, n) = parseOne(buf, i, flushEsc, flushPaste)
     if n == 0: break
     if m != nil: result.msgs.add m
     i += n
   result.consumed = i
+
+proc holdsPaste*(buf: string): bool =
+  ## True when what `parseInput` left unconsumed is a paste waiting for its end
+  ## marker — so a caller can tell "an escape sequence is arriving" from "a paste
+  ## is arriving", which want very different timeouts.
+  ##
+  ## Exact rather than a guess: `parseInput` consumes greedily from the front and
+  ## the caller re-slices to what is left, so an unconsumed buffer begins at
+  ## precisely whatever is being held.
+  buf.continuesWith(PasteStart, 0)

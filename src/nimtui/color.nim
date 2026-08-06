@@ -33,6 +33,20 @@ type
     n*: int                  ## palette index for `ckAnsi` (0..255)
     r*, g*, b*: int          ## components for `ckRgb` (0..255)
 
+  ColorProfile* = enum
+    ## How much colour the terminal can be told about. Declared here, beside the
+    ## conversions that implement it, rather than in `nimtui/style
+    ## <style.html>`_ where it is applied — it describes a representation, and
+    ## this module is the one that owns those.
+    ##
+    ## Ordered by capability, so `<` and `min` read the way they look. The trap
+    ## that follows: `cpNoColor` is the zero value, so anything holding one has
+    ## to be initialised explicitly or it silently strips every colour.
+    cpNoColor,               ## emit no colour at all
+    cpAnsi16,                ## the eight basic colours and their bright variants
+    cpAnsi256,               ## the xterm 256-colour palette
+    cpTrueColor              ## 24-bit
+
 # --- constructors -------------------------------------------------------------
 
 proc ansiColor*(n: int): Color =
@@ -133,6 +147,31 @@ proc toAnsi256*(c: Color): Color =
     ansiColor(232 + greyIdx)
   else:
     ansiColor(16 + 36 * ri + 6 * gi + bi)
+
+proc toAnsi16*(c: Color): Color =
+  ## Nearest of the sixteen system colours, for a terminal with nothing better.
+  ##
+  ## Unlike `toAnsi256 <#toAnsi256,Color>`_ this cannot dodge the fact that these
+  ## sixteen are the ones a user's theme is most likely to have remapped: with
+  ## sixteen slots there is nowhere else to go. That is why it is only reached
+  ## when the terminal genuinely has nothing better, and why its tests assert
+  ## endpoints and round trips rather than exact values.
+  ##
+  ## Nearest by squared distance over all sixteen, bright variants included —
+  ## the same measure `toAnsi256` uses, and the bright half is where most accent
+  ## colours land, so excluding it would make everything muddy. One artefact
+  ## worth knowing rather than working around: mid grey lands on index 8, which
+  ## many themes draw nearly invisibly on a dark background.
+  let v = c.toRgb
+  if v.kind != ckRgb: return c
+  var best = 0
+  var bestD = high(int)
+  for i, (r, g, b) in Ansi16:
+    let d = (r - v.r) * (r - v.r) + (g - v.g) * (g - v.g) + (b - v.b) * (b - v.b)
+    if d < bestD:
+      bestD = d
+      best = i
+  ansiColor(best)
 
 proc toHsl*(c: Color): tuple[h, s, l: float] =
   ## Hue in degrees (0..360), saturation and lightness in 0..1.

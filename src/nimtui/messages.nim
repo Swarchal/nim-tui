@@ -71,6 +71,22 @@ type
     ## a message for them.
     payload*: string
 
+  PasteMsg* = ref object of Msg
+    ## Text the user pasted, delivered whole rather than as a thousand
+    ## keystrokes. Sent only when the program was created with
+    ## `poBracketedPaste`.
+    ##
+    ## `text` is verbatim what sat between the two markers. A newline in it is
+    ## *data*, not `kEnter`, which is the entire point: pasting two lines into a
+    ## text field used to submit the first one halfway through the paste, move
+    ## focus, or open whatever was selected.
+    ##
+    ## Despite arriving from the terminal like `OscMsg`_ above, this is *not* a
+    ## runtime bookkeeping message — `program.handle` does not intercept it and
+    ## it reaches `update` like any other. Handle it, or with the option on,
+    ## pasted text is discarded.
+    text*: string
+
   TerminalBgMsg* = ref object of Msg
     ## The terminal's background colour, sent once at startup when the program
     ## was created with `poQueryBackground`.

@@ -34,6 +34,12 @@ const
   EnableMouseAllMotion* = Csi & "?1003h" & Csi & "?1006h"
   DisableMouse* = Csi & "?1006l" & Csi & "?1003l" & Csi & "?1002l" & Csi & "?1000l"
 
+  ## Bracketed paste (DEC private mode 2004). With it on, the terminal wraps
+  ## pasted text in the two markers below, which is the only thing that tells a
+  ## paste apart from someone typing very fast.
+  EnableBracketedPaste* = Csi & "?2004h"
+  DisableBracketedPaste* = Csi & "?2004l"
+
 proc cursorUp*(n: int): string =
   if n <= 0: "" else: Csi & $n & "A"
 
@@ -54,6 +60,22 @@ const StringIntroducers* = {']', 'P', 'X', '^', '_'}
   ## `escapeLen <#escapeLen,string,int>`_ and the input decoder have to agree
   ## about which sequences those are — a sequence measured as two bytes here and
   ## consumed whole there, or the reverse, is a desynchronised stream.
+
+const
+  PasteStart* = Csi & "200~"
+  PasteEnd* = Csi & "201~"
+    ## The markers `EnableBracketedPaste <#EnableBracketedPaste>`_ wraps pasted
+    ## text in. Named here for the same reason as `StringIntroducers`_ above: the
+    ## input decoder is the one that acts on them, but the bytes have to be
+    ## agreed in one place.
+    ##
+    ## Note that `escapeLen`_ deliberately does *not* treat a paste as one
+    ## sequence, which is the one place it and the decoder disagree on purpose.
+    ## They scan different streams: `escapeLen` measures view strings about to be
+    ## drawn, where these markers never appear, while the decoder scans the input
+    ## stream, where they do. If one somehow did reach a view string, measuring
+    ## it as a six-byte CSI and the payload after it as visible text is the right
+    ## answer.
 
 proc escapeLen*(s: string, i: int): int =
   ## Length in bytes of the escape sequence starting at `s[i]`, or 0 if there

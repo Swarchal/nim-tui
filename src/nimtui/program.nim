@@ -12,7 +12,7 @@
 ## docs for the extension point if you need genuinely concurrent effects.
 
 import std/[monotimes, times, algorithm]
-import ./[ansi, messages, input, renderer, tty, query]
+import ./[ansi, messages, input, renderer, style, tty, query]
 
 type
   UpdateProc*[M] = proc (model: M, msg: Msg): (M, Cmd) {.closure.}
@@ -24,6 +24,15 @@ type
     poMouseCellMotion    ## report mouse motion while a button is held
     poMouseAllMotion     ## report all mouse motion
     poQueryBackground    ## ask the terminal its background colour at startup
+    poBracketedPaste
+      ## Ask the terminal to bracket pasted text, so a paste arrives as one
+      ## `PasteMsg` instead of as its characters typed one at a time.
+      ##
+      ## Opt-in, and the contract is the same as the mouse options: **handle
+      ## `PasteMsg` or pasted text is discarded.** Without the option a pasted
+      ## newline arrives as `kEnter`, which submits a form halfway through the
+      ## paste; with it and no handler, the paste is silently dropped instead.
+      ## Neither is a default worth imposing, so the choice is the program's.
 
   Program*[M] = ref object
     model*: M
@@ -33,6 +42,22 @@ type
     options*: set[ProgramOption]
     escTimeoutMs*: int   ## how long a lone ESC waits for a sequence to finish
     idleTimeoutMs*: int  ## upper bound on how long the loop blocks on input
+    pasteTimeoutMs*: int
+      ## How long a paste with no end marker is held before being delivered as
+      ## it stands. A *stall* timeout — it measures the gap since the last byte
+      ## arrived, not the length of the paste — so a slow but progressing paste
+      ## is never cut off however long it takes.
+      ##
+      ## Far longer than `escTimeoutMs` because it is bounding something else
+      ## entirely: an escape sequence that has paused for 50 ms is over, whereas
+      ## a paste that has paused for 50 ms is ordinary. Raise it on a very slow
+      ## link.
+    detectColor*: bool
+      ## Resolve the colour profile from `NO_COLOR`, `$COLORTERM` and `$TERM` at
+      ## startup. Set false to keep whatever `style.setColorProfile` was given.
+      ##
+      ## A bool rather than an optional profile because `cpNoColor` is a
+      ## legitimate forced value and so cannot double as "unset".
     terminalBg*: Color
       ## What `poQueryBackground` found, or `ckDefault`. The same value that went
       ## out as a `TerminalBgMsg`, kept for a caller that reads the program back
@@ -48,6 +73,10 @@ type
 const
   DefaultEscTimeoutMs = 50
   DefaultIdleTimeoutMs = 250
+  DefaultPasteTimeoutMs = 2000
+    ## Above the worst inter-read gap inside a real paste — a bad link, or tmux
+    ## relaying a large buffer — and below the point at which someone decides the
+    ## program has hung and reaches for another terminal.
 
 proc newProgram*[M](model: M, update: UpdateProc[M], view: ViewProc[M],
                     options: set[ProgramOption] = {},
@@ -55,7 +84,8 @@ proc newProgram*[M](model: M, update: UpdateProc[M], view: ViewProc[M],
   ## Create a program. Nothing touches the terminal until `run`.
   Program[M](model: model, update: update, view: view, initCmd: initCmd,
              options: options, escTimeoutMs: DefaultEscTimeoutMs,
-             idleTimeoutMs: DefaultIdleTimeoutMs)
+             idleTimeoutMs: DefaultIdleTimeoutMs,
+             pasteTimeoutMs: DefaultPasteTimeoutMs, detectColor: true)
 
 proc send*[M](p: Program[M], msg: Msg) =
   ## Queue a message for delivery on the next loop iteration.
@@ -121,6 +151,11 @@ proc dueTimers[M](p: Program[M], now: MonoTime) =
 proc nextTimeoutMs[M](p: Program[M], now: MonoTime, buffered: bool): int =
   ## How long the loop may block: until the next timer, capped by the idle
   ## timeout, and shortened while a possibly-incomplete escape sequence is held.
+  ##
+  ## A held *paste* deliberately does not count as buffered. It is not waiting on
+  ## an escape flush, it is waiting on bytes — which wake the poll on their own —
+  ## so treating it as one would spin the loop at 20 Hz rescanning a payload that
+  ## has not changed, for as long as the paste lasts.
   result = p.idleTimeoutMs
   if p.timers.len > 0:
     let ms = (p.timers[0].dueAt - now).inMilliseconds.int
@@ -152,6 +187,9 @@ proc runHeadless*[M](p: Program[M], msgs: openArray[Msg], maxTimers = 256): M =
   ## There being no terminal, `poQueryBackground` does nothing here: a test that
   ## wants to exercise what its `TerminalBgMsg` leads to should put one in `msgs`,
   ## which is also the only way to test the case where the terminal declined.
+  ## `detectColor` is likewise ignored — the colour profile stays whatever it
+  ## was, so a test asserting on rendered bytes is not at the mercy of the
+  ## environment it runs under.
   ##
   ## `maxTimers` bounds how many timer payloads are delivered across the whole
   ## run. The bound cannot be dispensed with: an `update` that re-issues `tick`
@@ -175,17 +213,34 @@ proc runHeadless*[M](p: Program[M], msgs: openArray[Msg], maxTimers = 256): M =
 
 proc setupTerminal[M](p: Program[M]) =
   p.terminal.enterRawMode()
+  # Immediately after raw mode and before any of the modes below, so the window
+  # in which a terminating signal finds the terminal broken and no way to fix it
+  # is a few instructions rather than the whole of startup. Arming the full
+  # teardown before the modes are set is safe: turning off a mouse that was never
+  # turned on is a no-op, as is leaving an alt screen never entered.
+  p.terminal.armRestore(
+    altScreen = poAltScreen in p.options,
+    hideCursor = poHideCursor in p.options,
+    mouse = poMouseCellMotion in p.options or poMouseAllMotion in p.options,
+    bracketedPaste = poBracketedPaste in p.options)
   if poAltScreen in p.options: p.terminal.enterAltScreen()
   if poHideCursor in p.options: p.terminal.hideCursor()
   if poMouseAllMotion in p.options: p.terminal.enableMouse(allMotion = true)
   elif poMouseCellMotion in p.options: p.terminal.enableMouse()
+  if poBracketedPaste in p.options: p.terminal.enableBracketedPaste()
 
 proc restoreTerminal[M](p: Program[M]) =
-  if poMouseCellMotion in p.options or poMouseAllMotion in p.options:
-    p.terminal.disableMouse()
-  if poHideCursor in p.options: p.terminal.showCursor()
-  if poAltScreen in p.options: p.terminal.exitAltScreen()
-  else: p.renderer.finish()
+  # The same bytes a terminating signal writes, minus what only a signal needs —
+  # see `tty.emergencyEscapesFor`. Both go through `restoreEscapesFor`, so the
+  # normal path and the handler cannot drift apart.
+  p.terminal.restoreModes(
+    altScreen = poAltScreen in p.options,
+    hideCursor = poHideCursor in p.options,
+    mouse = poMouseCellMotion in p.options or poMouseAllMotion in p.options,
+    bracketedPaste = poBracketedPaste in p.options)
+  # Only the renderer knows whether a block is on screen to move past, which is
+  # exactly what a handler cannot ask it — hence the unconditional newline there.
+  if poAltScreen notin p.options: p.renderer.finish()
   p.terminal.exitRawMode()
 
 proc syncSize[M](p: Program[M]) =
@@ -223,12 +278,26 @@ proc run*[M](p: Program[M], input = stdin, output = stdout): M =
   p.running = true
 
   watchResize()
+  # Unconditional, like `watchResize` above and for the same reason: this is not
+  # a feature but repair of damage the library itself does by clearing ECHO and
+  # ICANON, and the person who most needs it is the one who did not know to ask.
+  watchTerminate()
   p.setupTerminal()
   try:
+    # Before the query, before the first size and before `initCmd`: both of those
+    # may build styled strings, and a theme derived from the background colour
+    # has to be assembled under the profile it will be drawn with.
+    if p.detectColor: setColorProfile detectColorProfile()
+
     # Bytes read but not yet decoded. Declared before the query rather than
     # inside the loop because the query reads from the same stream and may pick
     # up a keystroke on the way: those belong to the loop, not to the answer.
     var buf = ""
+    # When the last byte arrived, which is what `pasteTimeoutMs` measures from.
+    # Not when the paste started: a paste held across several reads consumes
+    # nothing each time, so timing from the start would cut a legitimate
+    # three-second paste off at two.
+    var lastByteAt = getMonoTime()
 
     if poQueryBackground in p.options:
       # Here and nowhere else. The question needs raw mode, so it cannot be asked
@@ -246,7 +315,9 @@ proc run*[M](p: Program[M], input = stdin, output = stdout): M =
 
     while p.running:
       let now = getMonoTime()
-      let event = p.terminal.waitForInput(p.nextTimeoutMs(now, buf.len > 0))
+      let holding = buf.holdsPaste()
+      let event = p.terminal.waitForInput(
+        p.nextTimeoutMs(now, buf.len > 0 and not holding))
       let timedOut = event == ieTimeout
 
       if takeResizePending():
@@ -257,12 +328,16 @@ proc run*[M](p: Program[M], input = stdin, output = stdout): M =
         # A readable fd with nothing to read means the stream ended; stopping
         # here is what keeps a closed stdin from spinning the loop.
         if not p.terminal.readAvailable(buf): p.send QuitMsg()
+        else: lastByteAt = getMonoTime()
       of ieClosed:
         p.send QuitMsg()
-      of ieTimeout: discard
+      of ieTimeout, ieInterrupted: discard
 
       if buf.len > 0:
-        let (msgs, consumed) = parseInput(buf, flushEsc = timedOut)
+        let stalled = holding and timedOut and
+          (getMonoTime() - lastByteAt).inMilliseconds.int >= p.pasteTimeoutMs
+        let (msgs, consumed) =
+          parseInput(buf, flushEsc = timedOut, flushPaste = stalled)
         if consumed > 0: buf = buf[consumed .. ^1]
         for m in msgs: p.send m
 

@@ -267,6 +267,113 @@ suite "string sequences":
     check OscMsg(msgs[0]).payload == "11;rgb:2e34/3436/4144"
     check consumed == buf.len
 
+suite "bracketed paste":
+  # What this exists for: without mode 2004 a pasted newline is `kEnter`, so
+  # pasting two lines into a text field submits the first one halfway through the
+  # paste, moves focus, or opens whatever was selected. The markers make the
+  # difference visible; these tests are about the decoder not throwing it away.
+
+  proc pastes(s: string, flushEsc = false, flushPaste = false): seq[string] =
+    let (msgs, _) = parseInput(s, flushEsc, flushPaste)
+    for m in msgs:
+      if m of PasteMsg: result.add PasteMsg(m).text
+
+  proc typed(s: string, flushEsc = false, flushPaste = false): seq[string] =
+    ## The keys only — not the `keys` helper above, which requires every message
+    ## to be a key, when the point here is that a paste is not one.
+    let (msgs, _) = parseInput(s, flushEsc, flushPaste)
+    for m in msgs:
+      if m of KeyMsg: result.add $KeyMsg(m)
+
+  test "a paste is one message and no keys":
+    let s = "\e[200~hello\e[201~"
+    let (msgs, consumed) = parseInput(s)
+    check consumed == s.len
+    require msgs.len == 1
+    check PasteMsg(msgs[0]).text == "hello"
+    check typed(s).len == 0
+
+  test "a pasted newline is text, not the enter key":
+    # The bug this whole thing is for.
+    check pastes("\e[200~a\nb\e[201~") == @["a\nb"]
+    check "enter" notin typed("\e[200~a\nb\e[201~")
+    check pastes("\e[200~a\r\nb\tc\e[201~") == @["a\r\nb\tc"]
+
+  test "an escape inside a paste is payload, not the end of it":
+    # The deliberate divergence from the string-sequence scan: a paste payload is
+    # user data, and pasted captures and configs contain escapes routinely.
+    check pastes("\e[200~a\e[Ab\e[201~") == @["a\e[Ab"]
+    check typed("\e[200~a\e[Ab\e[201~").len == 0
+
+  test "a paste among keys leaves the keys alone and in order":
+    check typed("x\e[200~pasted\e[201~y") == @["x", "y"]
+    check pastes("x\e[200~pasted\e[201~y") == @["pasted"]
+
+  test "an empty paste is still a paste":
+    check pastes("\e[200~\e[201~") == @[""]
+
+  test "an unterminated paste is held even once the read has timed out":
+    # The inversion. Every other partial sequence resolves on a flush; a read
+    # timing out in the middle of a real paste is ordinary, so this one must not.
+    let (msgs, consumed) = parseInput("\e[200~abc", flushEsc = true)
+    check msgs.len == 0
+    check consumed == 0
+
+  test "a paste split across two reads decodes once whole":
+    var buf = "\e[200~part one"
+    var (msgs, consumed) = parseInput(buf)
+    check msgs.len == 0
+    check consumed == 0
+    buf.add " and part two\e[201~"
+    (msgs, consumed) = parseInput(buf)
+    require msgs.len == 1
+    check PasteMsg(msgs[0]).text == "part one and part two"
+    check consumed == buf.len
+
+  test "a stalled paste is delivered rather than held forever":
+    # A literally typed start marker with nothing behind it never grows, so no
+    # byte cap can reach it — without this it would hold the buffer for the life
+    # of the program and swallow whatever was typed next.
+    let s = "\e[200~abc"
+    let (msgs, consumed) = parseInput(s, flushPaste = true)
+    require msgs.len == 1
+    check PasteMsg(msgs[0]).text == "abc"
+    check consumed == s.len
+    check pastes("\e[200~", flushPaste = true) == @[""]
+
+  test "a stalled paste hands the buffer back, so keys after it still decode":
+    var buf = "\e[200~abc"
+    let (_, consumed) = parseInput(buf, flushPaste = true)
+    buf = buf[consumed .. ^1]
+    check buf.len == 0
+    check keys("q") == @["q"]
+
+  test "an oversized paste is delivered rather than held":
+    var payload = newString(MaxPasteBytes + 1)
+    for i in 0 ..< payload.len: payload[i] = 'x'
+    let s = "\e[200~" & payload
+    let (msgs, consumed) = parseInput(s)
+    require msgs.len == 1
+    check PasteMsg(msgs[0]).text.len == MaxPasteBytes + 1
+    check consumed == s.len
+
+  test "a stray end marker is consumed and dropped":
+    let (msgs, consumed) = parseInput("\e[201~")
+    check msgs.len == 0
+    check consumed == 6
+    check typed("\e[201~q") == @["q"]
+
+  test "the start marker only fires once it is complete":
+    # A partial one is an ordinary partial CSI and behaves as it always did.
+    check parseInput("\e[200").consumed == 0
+    check keys("\e[200", flushEsc = true) == @["esc", "[", "2", "0", "0"]
+
+  test "holdsPaste tells a held paste from a held escape sequence":
+    check "\e[200~abc".holdsPaste
+    check not "\e[".holdsPaste
+    check not "".holdsPaste
+    check not "abc".holdsPaste
+
 suite "streams" :
   test "a burst of pasted text decodes in order":
     check keys("hi\r\e[A") == @["h", "i", "enter", "up"]

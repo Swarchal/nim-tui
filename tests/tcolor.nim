@@ -55,6 +55,30 @@ suite "colour conversion":
       check abs(back.g - c.g) <= 48
       check abs(back.b - c.b) <= 48
 
+  test "toAnsi16 round-trips the sixteen it can represent":
+    for n in 0 .. 15:
+      check ansiColor(n).toAnsi16 == ansiColor(n)
+
+  test "toAnsi16 gets the endpoints exact":
+    check hex"#000000".toAnsi16 == ansiColor(0)
+    check hex"#ffffff".toAnsi16 == ansiColor(15)
+    check hex"#ff0000".toAnsi16 == ansiColor(9)     # bright red, not the dim 1
+    check hex"#000080".toAnsi16 == ansiColor(4)
+
+  test "toAnsi16 leaves an unknown colour unknown":
+    check Color().toAnsi16.kind == ckDefault
+
+  test "every colour lands inside the sixteen":
+    # No round-trip bound here: with sixteen slots the nearest entry can be a
+    # long way off, and asserting a distance would only be asserting the
+    # palette's coarseness. That it always lands *somewhere* valid is the part
+    # that matters — an out-of-range index becomes a malformed escape.
+    for c in [hex"#7b2ff7", hex"#22d3ee", hex"#4ade80", gray(0.5), gray(0.0),
+              ansiColor(196), ansiColor(240)]:
+      let v = c.toAnsi16
+      check v.kind == ckAnsi
+      check v.n in 0 .. 15
+
   test "toAnsi256 prefers the grey ramp when it is the closer match":
     # The grey ramp is finer than the cube's diagonal, so a neutral colour must
     # come back exact rather than snapping to the nearest cube corner.

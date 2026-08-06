@@ -1,4 +1,4 @@
-import std/[unittest, unicode, sequtils]
+import std/[unittest, unicode, sequtils, strutils]
 import nimtui
 import nimtui/[textinput, viewport]
 
@@ -112,6 +112,57 @@ suite "text input editing":
     var ti = initTextInput()
     ti.press "a", "space", "b"
     check ti.text == "a b"
+
+  test "a bulk insert lands at the cursor":
+    var ti = initTextInput()
+    ti.text = "ad"
+    ti.cursor = 1
+    ti.insert "bc"
+    check ti.text == "abcd"
+    check ti.cursor == 3
+
+  test "a bulk insert at either end works too":
+    var ti = initTextInput()
+    ti.insert "world"
+    check ti.text == "world"
+    ti.cursor = 0
+    ti.insert "hello "
+    check ti.text == "hello world"
+    check ti.cursor == 6
+
+  test "a bulk insert of multi-byte runes counts characters, not bytes":
+    var ti = initTextInput()
+    ti.insert "日本語"
+    check ti.runes.len == 3
+    check ti.cursor == 3
+    check ti.text == "日本語"
+
+  test "control characters in pasted text become spaces":
+    # An ESC left in `runes` measures a column and draws nothing, so the field
+    # would render narrow. A space rather than nothing so words do not run
+    # together across a dropped newline.
+    var ti = initTextInput()
+    ti.insert "a\nb\e[Ac"
+    check "\e" notin ti.text
+    check "\n" notin ti.text
+    check ti.text == "a b [Ac"
+
+  test "an empty bulk insert changes nothing":
+    var ti = initTextInput()
+    ti.text = "abc"
+    ti.cursor = 1
+    ti.insert ""
+    check ti.text == "abc"
+    check ti.cursor == 1
+
+  test "handle takes a paste, a key, and nothing else":
+    var ti = initTextInput()
+    check ti.handle(PasteMsg(text: "pasted"))
+    check ti.text == "pasted"
+    check ti.handle(KeyMsg(key: kRune, rune: Rune('!')))
+    check ti.text == "pasted!"
+    check not ti.handle(KeyMsg(key: kEnter))          # still the caller's
+    check not ti.handle(WindowSizeMsg(width: 80, height: 24))
 
 suite "text input rendering":
   test "render is pure and fits the width exactly":

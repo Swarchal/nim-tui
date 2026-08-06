@@ -39,6 +39,8 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
     result[0].log.add "error: " & ErrorMsg(msg).error.msg
   elif msg of WindowSizeMsg:
     result[0].log.add "size " & $WindowSizeMsg(msg).width
+  elif msg of PasteMsg:
+    result[0].log.add "paste " & PasteMsg(msg).text
 
 proc view(m: Model): string = "count=" & $m.count
 
@@ -158,6 +160,13 @@ suite "runtime messages":
   test "window size is an ordinary message":
     let m = prog().runHeadless(@[Msg(WindowSizeMsg(width: 120, height: 40))])
     check m.log == @["size 120"]
+
+  test "a paste is an ordinary message":
+    # It arrives from the terminal like the runtime's own bookkeeping does, but
+    # it is not intercepted in `handle` — it reaches `update` whole, newline and
+    # all, which is the entire point of decoding it separately from keys.
+    let m = prog().runHeadless(@[Msg(PasteMsg(text: "one\ntwo"))])
+    check m.log == @["paste one\ntwo"]
 
 suite "manual driving":
   test "send plus drain steps the program from outside the loop":
