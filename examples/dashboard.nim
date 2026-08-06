@@ -8,7 +8,9 @@
 ## three at once.
 ##
 ## Also shows: a layout that reflows from a 2x2 grid to a single column when the
-## terminal is narrow, and history kept in the model so `view` stays pure.
+## terminal is narrow — with the columns divided by `splitWidths`, so the panes
+## come to exactly the terminal's width at every size — and history kept in the
+## model so `view` stays pure.
 ##
 ##   nim c -r --path:src examples/dashboard.nim
 
@@ -197,14 +199,18 @@ proc view(m: Model): string =
       joinVertical(m.series[0].seriesPane(m.width, top),
                    m.gaugePane(m.width, bodyHeight - top))
     else:
-      let left = m.width div 2
-      let right = m.width - left
+      # `splitWidths` rather than `width div 2` and a remainder by hand. Equal
+      # halves are the easy case; the bottom row is 2:3, which is where doing it
+      # by hand goes wrong — round each share on its own and the row comes out a
+      # column over, which wraps and drags the whole frame out of step.
+      let top = splitWidths(m.width, 2)
+      let bottom = splitWidths(m.width, [2.0, 3.0])
       let topHeight = max(bodyHeight * 3 div 5, 6)
       joinVertical(
-        joinHorizontal([m.series[0].seriesPane(left, topHeight),
-                        m.series[1].seriesPane(right, topHeight)]),
-        joinHorizontal([m.gaugePane(left, bodyHeight - topHeight),
-                        m.logPane(right, bodyHeight - topHeight)]))
+        joinHorizontal([m.series[0].seriesPane(top[0], topHeight),
+                        m.series[1].seriesPane(top[1], topHeight)]),
+        joinHorizontal([m.gaugePane(bottom[0], bodyHeight - topHeight),
+                        m.logPane(bottom[1], bodyHeight - topHeight)]))
 
   joinVertical(header, body, footer)
 

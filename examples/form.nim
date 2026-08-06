@@ -11,6 +11,10 @@
 ## of "tab": ...
 ## ```
 ##
+## Also shows `TextInput`'s `mask`, on the password field: it changes what
+## `render` draws and nothing else, so validation, the cursor and the horizontal
+## scroll all still work on the real text.
+##
 ## That works because `TextInput.handleKey` returns false for anything that is
 ## not editing. `left` and `home` are the field's; `tab`, `up` and `enter` fall
 ## through and become focus movement. No mode flag, no list of keys to exclude,
@@ -20,12 +24,12 @@
 ##
 ##   nim c -r --path:src examples/form.nim
 
-import std/[math, strutils, strformat]
+import std/[math, strutils, strformat, unicode]
 import nimtui
 
 type
   FieldKind = enum
-    fkText, fkEmail, fkHost, fkPort
+    fkText, fkEmail, fkHost, fkPort, fkSecret
 
   Field = object
     label, hint: string
@@ -66,6 +70,10 @@ proc validate(f: Field): string =
       if n < 1 or n > 65535: "must be between 1 and 65535" else: ""
     except ValueError:
       "must be a number"
+  of fkSecret:
+    # Validated on what was typed, not on what is drawn: the mask is a render
+    # concern and `text` still returns the real thing.
+    if v.len < 8: "must be at least 8 characters" else: ""
 
 proc revalidate(m: var Model) =
   for f in m.fields.mitems:
@@ -214,6 +222,9 @@ when isMainModule:
     Field(label: "port", kind: fkPort, required: true,
           hint: "1-65535",
           input: initTextInput("5432")),
+    Field(label: "password", kind: fkSecret, required: true,
+          hint: "drawn masked, validated on what was typed",
+          input: initTextInput("at least 8 characters", mask = Rune('*'))),
   ]
   model.revalidate()
   discard newProgram(model, update, view,

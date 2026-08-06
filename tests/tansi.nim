@@ -247,3 +247,42 @@ suite "oneLine":
     for s in ["a\nb", "x\ty", "\e[31mq\nr\e[0m", "日\n本"]:
       check oneLine(s).len == s.len             # one byte in, one byte out
       check oneLine(oneLine(s)) == oneLine(s)   # idempotent
+
+suite "hyperlinks":
+  test "a link costs no columns":
+    # The whole reason this needs nothing but the helper: `escapeLen` already
+    # treats OSC as a string sequence, so the measuring machinery was ready.
+    check displayWidth(link("click", "https://example.com")) == 5
+    check displayWidth(link("", "https://example.com")) == 0
+
+  test "and none of the sequence survives stripAnsi":
+    check stripAnsi(link("click", "https://example.com")) == "click"
+
+  test "it lays out like the text it wraps":
+    let plain = "click"
+    let linked = link(plain, "https://example.com")
+    check truncateVisible(linked, 3).displayWidth == 3
+    check padVisible(linked, 10).displayWidth == 10
+
+  test "the url is in there, and so is the closing sequence":
+    let s = link("x", "https://example.com/a")
+    check "https://example.com/a" in s
+    check s.endsWith("\e]8;;\e\\")
+
+  test "an id is carried when given and absent when not":
+    check ";42;" in link("x", "http://a", id = "42")
+    check link("x", "http://a").startsWith("\e]8;;")
+
+  test "bytes that would end the sequence early are dropped":
+    # A `;` in a URL is legal and would otherwise read as the end of the
+    # parameter list; an ESC or BEL would terminate the sequence mid-address.
+    let s = link("x", "http://a/b;c\ed\ae")
+    check displayWidth(s) == 1
+    check "http://a/bcde" in s
+    check stripAnsi(s) == "x"
+
+  test "a link in a table cell or a status bar does not move anything":
+    # The case it exists for. Both measure what they are given.
+    let cell = link("issue #7", "https://example.com/7")
+    check displayWidth(padVisible(cell, 20)) == 20
+    check displayWidth(oneLine(cell)) == 8

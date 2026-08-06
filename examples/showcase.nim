@@ -2,7 +2,8 @@
 ##
 ## What this example is really about: the parts of nimtui that exist purely to
 ## make a view look like something. Gradients and themes for colour, `Panel` for
-## framing, `Table` for aligned data, `TextArea` and `ListView` for the two
+## framing, OSC 8 hyperlinks that cost no columns, `Table` for aligned data,
+## `TextArea` and `ListView` for the two
 ## scrolling components, and `place` for a dialog drawn over the top of it all.
 ##
 ## Also shows the one piece of bookkeeping the components need: they hold a
@@ -214,7 +215,12 @@ proc tablePane(m: Model): string =
   tbl.zebra = Style().bg(t.border.darken(0.28))
 
   for s in m.services:
-    tbl.add(s.name,
+    # An OSC 8 hyperlink in a table cell. The column still sizes to the visible
+    # text — `displayWidth` measures the link as just its name, because
+    # `escapeLen` already knew OSC carries a payload — so a terminal that
+    # implements it makes the name clickable and one that does not shows exactly
+    # the same table.
+    tbl.add(link(s.name, "https://example.com/service/" & s.name),
             insertSep($s.reqs, ','),
             &"{s.p99:.1f}",
             if s.healthy: t.successStyle.render("● ok")

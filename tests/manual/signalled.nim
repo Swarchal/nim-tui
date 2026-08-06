@@ -2,8 +2,8 @@
 ##
 ##     nim c --path:src tests/manual/signalled.nim
 ##
-## Takes the modes to turn on as arguments — `alt`, `cursor`, `mouse`, `paste` —
-## so one binary covers every combination of what teardown has to undo.
+## Takes the modes to turn on as arguments — `alt`, `cursor`, `mouse`, `paste`,
+## `focus` — so one binary covers every combination of what teardown has to undo.
 ##
 ## It renders a line and then waits. That matters for the assertion about the
 ## trailing newline: the scrollback path emits one only when a block is on
@@ -35,6 +35,7 @@ for i in 1 .. paramCount():
   of "cursor": options.incl poHideCursor
   of "mouse": options.incl poMouseCellMotion
   of "paste": options.incl poBracketedPaste
+  of "focus": options.incl poFocusReporting
   else: quit("unknown mode: " & paramStr(i))
 
 discard newProgram(Model(), update, view, options = options,

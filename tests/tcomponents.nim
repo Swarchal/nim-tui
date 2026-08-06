@@ -201,6 +201,63 @@ suite "text input rendering":
     ti.press "left"                       # now on 語
     check stripAnsi(ti.render(4)).strip == "本語"
 
+suite "text input masking":
+  test "a masked field shows the mask and still holds the text":
+    var ti = initTextInput(mask = Rune('*'))
+    ti.text = "hunter2"
+    check ti.text == "hunter2"
+    check ti.render(20, focused = false).stripAnsi.strip(leading = false) ==
+      "*******"
+
+  test "an unmasked field is unchanged, so the mask is genuinely off by default":
+    var a = initTextInput()
+    a.text = "hunter2"
+    var b = initTextInput(mask = Rune(0))
+    b.text = "hunter2"
+    check a.render(20) == b.render(20)
+    check "hunter2" in a.render(20).stripAnsi
+
+  test "the mask is measured as well as drawn":
+    # The trap: taking the width from the real rune and drawing the mask sizes
+    # the window for text that is not on screen, and a field narrower than it
+    # claims desynchronises the frame rather than just looking wrong.
+    for w in 1 .. 24:
+      checkpoint $w
+      var ti = initTextInput(mask = Rune('*'))
+      ti.text = "日本語のパスワード"
+      check displayWidth(ti.render(w)) == w
+      var wide = initTextInput(mask = "＊".runeAt(0))   # fullwidth: two columns
+      wide.text = "abcdefghij"
+      check displayWidth(wide.render(w)) == w
+
+  test "a wide mask shows fewer characters, which is the honest answer":
+    # Fullwidth, so genuinely two columns. Note `●` is *not* a wide rune here:
+    # it is East Asian Ambiguous, which this library deliberately calls one.
+    var ti = initTextInput(mask = "＊".runeAt(0))
+    ti.text = "abcdef"
+    check displayWidth(ti.render(10)) == 10
+    # Four, not five: one column stays reserved for the cursor block, the same
+    # as it is for an unmasked field.
+    check ti.render(10, focused = false).stripAnsi.strip(leading = false) ==
+      "＊＊＊＊"
+    # The same field with a one-column mask shows all six.
+    var narrow = initTextInput(mask = Rune('*'))
+    narrow.text = "abcdef"
+    check narrow.render(10, focused = false).stripAnsi.strip(leading = false) ==
+      "******"
+
+  test "the cursor still tracks, and the field still fits":
+    var ti = initTextInput(mask = Rune('*'))
+    ti.text = "a-very-long-password-indeed"
+    for c in [0, 5, 13, ti.runes.len]:
+      ti.cursor = c
+      checkpoint $c
+      check displayWidth(ti.render(12)) == 12
+
+  test "the placeholder is not masked, since it is not the secret":
+    var ti = initTextInput("password", mask = Rune('*'))
+    check "password" in ti.render(20, focused = false).stripAnsi
+
 suite "viewport":
   test "ensureVisible scrolls the minimum amount":
     var v = Viewport(height: 5)

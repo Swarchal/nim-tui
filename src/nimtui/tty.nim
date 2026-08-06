@@ -28,6 +28,21 @@ type
       ## of the sequence is never coming. A SIGWINCH landing mid-sequence is not
       ## evidence of that, and reporting it as a timeout used to flush one.
 
+  TerminalMode* = enum
+    ## A terminal mode this module can turn on, and therefore has to turn off
+    ## again. `program`'s `ProgramOption` maps onto this; the two are separate
+    ## because the options include things that are not modes at all, and because
+    ## this module is meant to be the only one a port reimplements.
+    ##
+    ## A set rather than one bool per mode in every signature: five positional
+    ## bools that all mean "was this on" is a transposition waiting to happen,
+    ## and transposing two of them writes a plausible-looking wrong sequence.
+    tmAltScreen
+    tmHideCursor
+    tmMouse
+    tmBracketedPaste
+    tmFocus
+
   WinSize {.importc: "struct winsize", header: "<sys/ioctl.h>", final, pure.} = object
     ws_row, ws_col, ws_xpixel, ws_ypixel: cushort
 
@@ -187,6 +202,24 @@ proc windowSize*(t: Tty): tuple[width, height: int] =
   except ValueError:
     discard
 
+proc pixelSize*(t: Tty): tuple[width, height: int] =
+  ## Terminal size in pixels, or `(0, 0)` if the terminal did not say.
+  ##
+  ## What an image protocol needs, and the one number that cannot be derived from
+  ## anything else the library reports: cells divided into pixels is the cell
+  ## size, which is what decides how many rows an image occupies.
+  ##
+  ## Zero is *unknown*, in the `ckDefault` sense rather than the renderer's — a
+  ## great many terminals leave these fields at zero, and there is no fallback
+  ## to reach for, no environment variable and no sensible default. A caller that
+  ## cannot cope without an answer should not be asking. Separate from
+  ## `windowSize`_ for that reason: the cell size always has an answer and this
+  ## usually does not, so folding them together would put a number nobody can
+  ## trust beside two everybody can.
+  var ws: WinSize
+  if ioctl(t.output.getFileHandle(), TIOCGWINSZ.uint, addr ws) == 0:
+    return (ws.ws_xpixel.int, ws.ws_ypixel.int)
+
 proc waitForInput*(t: Tty, timeoutMs: int): InputEvent =
   ## Block until input is readable or `timeoutMs` elapses. A negative timeout
   ## waits indefinitely.
@@ -235,8 +268,8 @@ proc showCursor*(t: Tty) = t.write ShowCursor
 
 # --- putting the terminal back --------------------------------------------
 
-proc restoreEscapesFor*(altScreen, hideCursor, mouse, bracketedPaste: bool): string =
-  ## The escapes that undo the modes named, in the reverse of the order
+proc restoreEscapesFor*(modes: set[TerminalMode]): string =
+  ## The escapes that undo `modes`, in the reverse of the order
   ## `setupTerminal` sets them.
   ##
   ## Split out from `restoreModes`_ for the same reason `renderer.frameFor` is
@@ -245,17 +278,17 @@ proc restoreEscapesFor*(altScreen, hideCursor, mouse, bracketedPaste: bool): str
   ##
   ## No trailing newline. On the normal path the renderer owns that, since only
   ## it knows whether a block is on screen at all.
-  if bracketedPaste: result.add DisableBracketedPaste
-  if mouse: result.add DisableMouse
-  if hideCursor: result.add ShowCursor
-  if altScreen: result.add ExitAltScreen
+  if tmFocus in modes: result.add DisableFocusReporting
+  if tmBracketedPaste in modes: result.add DisableBracketedPaste
+  if tmMouse in modes: result.add DisableMouse
+  if tmHideCursor in modes: result.add ShowCursor
+  if tmAltScreen in modes: result.add ExitAltScreen
 
-proc restoreModes*(t: Tty, altScreen, hideCursor, mouse, bracketedPaste: bool) =
+proc restoreModes*(t: Tty, modes: set[TerminalMode]) =
   ## Write `restoreEscapesFor`_. The normal teardown path.
-  t.write restoreEscapesFor(altScreen, hideCursor, mouse, bracketedPaste)
+  t.write restoreEscapesFor(modes)
 
-proc emergencyEscapesFor*(altScreen, hideCursor, mouse,
-                          bracketedPaste: bool): string =
+proc emergencyEscapesFor*(modes: set[TerminalMode]): string =
   ## What a terminating signal writes. `restoreEscapesFor`_ plus three things
   ## the normal path has no need of, because it never runs part way through a
   ## frame:
@@ -272,12 +305,12 @@ proc emergencyEscapesFor*(altScreen, hideCursor, mouse,
   ##   blank line before the shell prompt costs nothing, while omitting one when
   ##   a frame *is* on screen leaves the prompt overwriting its last line.
   result = EndSyncUpdate
-  result.add restoreEscapesFor(altScreen, hideCursor, mouse, bracketedPaste)
+  result.add restoreEscapesFor(modes)
   result.add Reset
-  if not altScreen: result.add "\r\n"
+  if tmAltScreen notin modes: result.add "\r\n"
 
-proc armRestore*(t: Tty, altScreen, hideCursor, mouse, bracketedPaste: bool) =
-  ## Arm `emergencyRestore`_ for the modes named. Call after `enterRawMode`,
+proc armRestore*(t: Tty, modes: set[TerminalMode]) =
+  ## Arm `emergencyRestore`_ for `modes`. Call after `enterRawMode`,
   ## which is what saves the `Termios` this puts back.
   ##
   ## Takes modes rather than bytes because this module is meant to be the only
@@ -287,7 +320,7 @@ proc armRestore*(t: Tty, altScreen, hideCursor, mouse, bracketedPaste: bool) =
   ## mouse that was never enabled, or leaving an alt screen never entered, are
   ## both no-ops.
   if not t.inRawMode: return
-  let bytes = emergencyEscapesFor(altScreen, hideCursor, mouse, bracketedPaste)
+  let bytes = emergencyEscapesFor(modes)
   doAssert bytes.len <= MaxRestoreBytes,
     "restore sequence outgrew MaxRestoreBytes: " & $bytes.len
   for i, c in bytes: armedBytes[i] = c
@@ -308,3 +341,6 @@ proc disableMouse*(t: Tty) = t.write DisableMouse
 
 proc enableBracketedPaste*(t: Tty) = t.write EnableBracketedPaste
 proc disableBracketedPaste*(t: Tty) = t.write DisableBracketedPaste
+
+proc enableFocusReporting*(t: Tty) = t.write EnableFocusReporting
+proc disableFocusReporting*(t: Tty) = t.write DisableFocusReporting

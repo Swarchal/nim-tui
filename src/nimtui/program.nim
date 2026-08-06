@@ -33,6 +33,13 @@ type
       ## newline arrives as `kEnter`, which submits a form halfway through the
       ## paste; with it and no handler, the paste is silently dropped instead.
       ## Neither is a default worth imposing, so the choice is the program's.
+    poFocusReporting
+      ## Ask the terminal to say when its window gains or loses focus, delivered
+      ## as a `FocusMsg`.
+      ##
+      ## Unlike the options above, ignoring the message costs nothing — so this
+      ## is opt-in only because the escape is, not because there is a trap in
+      ## leaving it unhandled.
 
   Program*[M] = ref object
     model*: M
@@ -211,6 +218,17 @@ proc runHeadless*[M](p: Program[M], msgs: openArray[Msg], maxTimers = 256): M =
     if not p.deliverTimers(budget): return p.model
   p.model
 
+proc terminalModes[M](p: Program[M]): set[TerminalMode] =
+  ## The options that correspond to a terminal mode, which is what `tty` has to
+  ## put back. In one place so setup, teardown and the armed signal restore
+  ## cannot come to disagree about what is on.
+  if poAltScreen in p.options: result.incl tmAltScreen
+  if poHideCursor in p.options: result.incl tmHideCursor
+  if poMouseCellMotion in p.options or poMouseAllMotion in p.options:
+    result.incl tmMouse
+  if poBracketedPaste in p.options: result.incl tmBracketedPaste
+  if poFocusReporting in p.options: result.incl tmFocus
+
 proc setupTerminal[M](p: Program[M]) =
   p.terminal.enterRawMode()
   # Immediately after raw mode and before any of the modes below, so the window
@@ -218,26 +236,19 @@ proc setupTerminal[M](p: Program[M]) =
   # is a few instructions rather than the whole of startup. Arming the full
   # teardown before the modes are set is safe: turning off a mouse that was never
   # turned on is a no-op, as is leaving an alt screen never entered.
-  p.terminal.armRestore(
-    altScreen = poAltScreen in p.options,
-    hideCursor = poHideCursor in p.options,
-    mouse = poMouseCellMotion in p.options or poMouseAllMotion in p.options,
-    bracketedPaste = poBracketedPaste in p.options)
+  p.terminal.armRestore(p.terminalModes())
   if poAltScreen in p.options: p.terminal.enterAltScreen()
   if poHideCursor in p.options: p.terminal.hideCursor()
   if poMouseAllMotion in p.options: p.terminal.enableMouse(allMotion = true)
   elif poMouseCellMotion in p.options: p.terminal.enableMouse()
   if poBracketedPaste in p.options: p.terminal.enableBracketedPaste()
+  if poFocusReporting in p.options: p.terminal.enableFocusReporting()
 
 proc restoreTerminal[M](p: Program[M]) =
   # The same bytes a terminating signal writes, minus what only a signal needs —
   # see `tty.emergencyEscapesFor`. Both go through `restoreEscapesFor`, so the
   # normal path and the handler cannot drift apart.
-  p.terminal.restoreModes(
-    altScreen = poAltScreen in p.options,
-    hideCursor = poHideCursor in p.options,
-    mouse = poMouseCellMotion in p.options or poMouseAllMotion in p.options,
-    bracketedPaste = poBracketedPaste in p.options)
+  p.terminal.restoreModes(p.terminalModes())
   # Only the renderer knows whether a block is on screen to move past, which is
   # exactly what a handler cannot ask it — hence the unconditional newline there.
   if poAltScreen notin p.options: p.renderer.finish()
@@ -263,7 +274,14 @@ proc syncSize[M](p: Program[M]) =
     p.renderer.clearBlock()
   p.renderer.width = size.width
   p.renderer.height = size.height
-  p.send WindowSizeMsg(width: size.width, height: size.height)
+  # Read only once a real resize has been established, not as part of deciding
+  # whether one happened: a terminal that reports no pixels reports zero every
+  # time, so comparing them would never say anything the cells did not, while a
+  # terminal that does report them can change them on a font change with the
+  # grid unmoved — which is not a resize and must not clear the screen.
+  let px = p.terminal.pixelSize()
+  p.send WindowSizeMsg(width: size.width, height: size.height,
+                       pixelWidth: px.width, pixelHeight: px.height)
 
 proc run*[M](p: Program[M], input = stdin, output = stdout): M =
   ## Take over the terminal and run until a command returns `QuitMsg`.

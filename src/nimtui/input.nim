@@ -109,6 +109,13 @@ proc parseCsi(buf: string, start: int): tuple[msg: Msg, len: int] =
   of 'H': return key(kHome)
   of 'F': return key(kEnd)
   of 'Z': return (Msg(KeyMsg(key: kShiftTab, mods: {mShift})), used)
+  of 'I', 'O':
+    # Focus reporting, and only with no parameters: `CSI I` / `CSI O` are the
+    # whole sequence. Guarding on that matters because a parameterised sequence
+    # ending in the same final byte is something else entirely, and reporting it
+    # as a focus change would be a lie rather than a gap.
+    if params.len > 0: return (nil, used)
+    return (Msg(FocusMsg(focused: final == 'I')), used)
   of 'P': return key(kF1)                       # some terminals in CSI form
   of 'Q': return key(kF2)
   of 'S': return key(kF4)

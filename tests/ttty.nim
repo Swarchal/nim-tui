@@ -8,50 +8,60 @@ import nimtui/[ansi, tty]
 ## is the sequence itself, split out of the writing for the same reason
 ## `renderer.frameFor` is split out of `render`.
 
+const AllModes = {TerminalMode.low .. TerminalMode.high}
+  ## Written as the whole range rather than listed, so a mode added later is
+  ## covered by the size and containment assertions below without anyone
+  ## remembering to add it here.
+
 suite "restoring the terminal":
   test "modes that were never enabled are not turned off":
-    check restoreEscapesFor(false, false, false, false) == ""
+    check restoreEscapesFor({}) == ""
 
   test "each mode contributes its own escape and nothing else":
-    check restoreEscapesFor(true, false, false, false) == ExitAltScreen
-    check restoreEscapesFor(false, true, false, false) == ShowCursor
-    check restoreEscapesFor(false, false, true, false) == DisableMouse
-    check restoreEscapesFor(false, false, false, true) == DisableBracketedPaste
+    check restoreEscapesFor({tmAltScreen}) == ExitAltScreen
+    check restoreEscapesFor({tmHideCursor}) == ShowCursor
+    check restoreEscapesFor({tmMouse}) == DisableMouse
+    check restoreEscapesFor({tmBracketedPaste}) == DisableBracketedPaste
+    check restoreEscapesFor({tmFocus}) == DisableFocusReporting
+
+  test "every mode contributes something, so none is silently forgotten":
+    for m in TerminalMode:
+      checkpoint $m
+      check restoreEscapesFor({m}).len > 0
 
   test "the normal path leaves the newline to the renderer":
     # Only the renderer knows whether a block is on screen to move past.
-    check "\r\n" notin restoreEscapesFor(true, true, true, true)
-    check "\n" notin restoreEscapesFor(false, true, true, true)
+    check "\r\n" notin restoreEscapesFor(AllModes)
+    check "\n" notin restoreEscapesFor(AllModes - {tmAltScreen})
 
 suite "emergency restore bytes":
   test "synchronised output is ended first, since a signal can land mid-frame":
     # A frame is wrapped in BeginSyncUpdate/EndSyncUpdate, and a terminal left
     # holding its display looks exactly like a hang.
-    check emergencyEscapesFor(true, true, true, true).startsWith(EndSyncUpdate)
-    check emergencyEscapesFor(false, false, false, false).startsWith(EndSyncUpdate)
+    check emergencyEscapesFor(AllModes).startsWith(EndSyncUpdate)
+    check emergencyEscapesFor({}).startsWith(EndSyncUpdate)
 
   test "colour is always reset, which the normal path need not do":
     # A signal can land between the escape that turns a colour on and the one
     # that turns it off; on the normal path `style.render` has emitted both.
-    check Reset in emergencyEscapesFor(false, false, false, false)
+    check Reset in emergencyEscapesFor({})
 
   test "a program on the alt screen leaves it rather than printing a newline":
-    let s = emergencyEscapesFor(true, false, false, false)
+    let s = emergencyEscapesFor({tmAltScreen})
     check ExitAltScreen in s
     check not s.endsWith("\r\n")
 
   test "a program in the scrollback ends on a fresh line":
-    check emergencyEscapesFor(false, false, false, false).endsWith("\r\n")
-    check emergencyEscapesFor(false, true, true, true).endsWith("\r\n")
+    check emergencyEscapesFor({}).endsWith("\r\n")
+    check emergencyEscapesFor(AllModes - {tmAltScreen}).endsWith("\r\n")
 
   test "it does everything the normal path does":
-    let modes = [(false, false, false, false), (true, true, true, true),
-                 (false, true, false, true), (true, false, true, false)]
-    for (a, h, m, b) in modes:
-      checkpoint $(a, h, m, b)
-      check restoreEscapesFor(a, h, m, b) in emergencyEscapesFor(a, h, m, b)
+    for modes in [{}, AllModes, {tmHideCursor, tmBracketedPaste},
+                  {tmAltScreen, tmMouse}, {tmFocus}]:
+      checkpoint $modes
+      check restoreEscapesFor(modes) in emergencyEscapesFor(modes)
 
   test "the longest sequence fits the buffer a handler can write from":
     # The one that fails if someone lengthens DisableMouse, rather than the
     # handler silently emitting half of it.
-    check emergencyEscapesFor(true, true, true, true).len <= MaxRestoreBytes
+    check emergencyEscapesFor(AllModes).len <= MaxRestoreBytes

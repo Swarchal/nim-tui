@@ -15,9 +15,17 @@ type
     runes*: seq[Rune]
     cursor*: int            ## 0 .. runes.len (one past the end is valid)
     placeholder*: string
+    mask*: Rune
+      ## Drawn in place of every rune when set, for a password field. `Rune(0)`
+      ## — the zero value, so a field is unmasked unless asked — means off.
+      ##
+      ## Affects `render <#render,TextInput,int>`_ and nothing else: `text` still
+      ## returns what was typed, which is the point. Note that the mask is what
+      ## gets *measured* as well as drawn, so a wide mask rune on a narrow field
+      ## shows fewer characters than an unmasked one would.
 
-proc initTextInput*(placeholder = ""): TextInput =
-  TextInput(placeholder: placeholder)
+proc initTextInput*(placeholder = "", mask = Rune(0)): TextInput =
+  TextInput(placeholder: placeholder, mask: mask)
 
 proc text*(ti: TextInput): string =
   $ti.runes
@@ -140,6 +148,16 @@ proc render*(ti: TextInput, width: int, focused = true): string =
   ##
   ## Pure: the scroll offset is derived from the cursor, so `view` procs need no
   ## mutable copy of the field.
+  ##
+  ## Every rune is read through `shown`, never out of `runes` directly, so a
+  ## mask is measured as well as drawn. Taking the width from the real rune and
+  ## drawing the mask would size the window for text that is not on screen —
+  ## which for a masked CJK password is a field that renders half as wide as it
+  ## claims, and per the no-wrap rule that desynchronises the whole frame rather
+  ## than one line.
+  template shown(i: int): Rune =
+    if ti.mask == Rune(0): ti.runes[i] else: ti.mask
+
   if width <= 0: return ""
   if ti.runes.len == 0 and not focused:
     return padVisible(Style().faint().render(
@@ -154,11 +172,11 @@ proc render*(ti: TextInput, width: int, focused = true): string =
   # cursor block itself — to find the leftmost rune that can be shown with the
   # cursor still on screen.
   let cursorWidth =
-    if ti.cursor < ti.runes.len: runeWidth(ti.runes[ti.cursor]) else: 1
+    if ti.cursor < ti.runes.len: runeWidth(shown(ti.cursor)) else: 1
   var offset = ti.cursor
   var used = cursorWidth
   while offset > 0:
-    let w = runeWidth(ti.runes[offset - 1])
+    let w = runeWidth(shown(offset - 1))
     if used + w > width: break
     used += w
     dec offset
@@ -166,12 +184,13 @@ proc render*(ti: TextInput, width: int, focused = true): string =
   var visible = ""
   var col = 0
   for i in offset ..< ti.runes.len:
-    let w = runeWidth(ti.runes[i])
+    let r = shown(i)
+    let w = runeWidth(r)
     if col + w > width: break
     if focused and i == ti.cursor:
-      visible.add Style().reverse().render($ti.runes[i])
+      visible.add Style().reverse().render($r)
     else:
-      visible.add ti.runes[i]        # the Rune overload: no intermediate string
+      visible.add r                  # the Rune overload: no intermediate string
     col += w
   if focused and ti.cursor >= ti.runes.len and col < width:
     visible.add Style().reverse().render(" ")

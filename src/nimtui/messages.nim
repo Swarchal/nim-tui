@@ -57,6 +57,14 @@ type
   WindowSizeMsg* = ref object of Msg
     ## Sent once at startup and again on every SIGWINCH.
     width*, height*: int
+    pixelWidth*, pixelHeight*: int
+      ## The same window in pixels, or `0` when the terminal did not say — which
+      ## is common, and is *unknown* rather than empty. Only useful to something
+      ## drawing images, which needs the cell size these divide down to.
+      ##
+      ## Note that a resize is detected from the cell size alone, so a terminal
+      ## that changes its font without changing the grid does not produce a
+      ## message even though these two have changed.
 
   OscMsg* = ref object of Msg
     ## An OSC string the terminal sent us: everything between `ESC ]` and the
@@ -86,6 +94,15 @@ type
     ## it reaches `update` like any other. Handle it, or with the option on,
     ## pasted text is discarded.
     text*: string
+
+  FocusMsg* = ref object of Msg
+    ## The terminal window gained or lost focus. Sent only when the program was
+    ## created with `poFocusReporting`.
+    ##
+    ## What it is for is doing *less*: pausing an animation, stopping a poll, or
+    ## dimming the cursor block while nobody is looking. A program that ignores
+    ## it is not broken, which is the difference between this and `PasteMsg`_.
+    focused*: bool
 
   TerminalBgMsg* = ref object of Msg
     ## The terminal's background colour, sent once at startup when the program

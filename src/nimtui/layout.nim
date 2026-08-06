@@ -31,7 +31,7 @@
 ## price of blocks being ordinary strings; it is a few tens of microseconds for a
 ## screenful, well inside a frame.
 
-import std/strutils
+import std/[strutils, algorithm]
 import ./[ansi, style, spans]
 # `renderBox` takes `Style` values, so a caller importing only this module still
 # needs them — re-exported for the same reason `ansi` re-exports `width`.
@@ -157,6 +157,80 @@ proc joinHorizontal*(blocks: openArray[string], gap = 0): string =
 proc joinVertical*(blocks: varargs[string]): string =
   ## Stack blocks. Widths are left as they are; pad first if they must align.
   blocks.join("\n")
+
+proc splitWidths*(total: int, ratios: openArray[float], gap = 0): seq[int] =
+  ## Divide `total` columns among `ratios.len` panes, in proportion, **summing to
+  ## exactly `total`** once the gaps between them are counted.
+  ##
+  ## ```nim
+  ## let w = splitWidths(80, [1.0, 2.0, 1.0])   # @[20, 40, 20]
+  ## echo joinHorizontal([renderBox(a, w[0], 10), renderBox(b, w[1], 10)])
+  ## ```
+  ##
+  ## Weights, not fractions: they are normalised here, so `[1, 2, 1]` and
+  ## `[0.25, 0.5, 0.25]` mean the same thing and nothing has to add up to one.
+  ## Negative weights count as zero.
+  ##
+  ## Exactness is the entire point. Every application writes this and hands the
+  ## remainder to the last pane, or rounds each share independently and is one or
+  ## two columns out; either way a row comes out wider than the terminal, and
+  ## because the renderer assumes no wrapping that desynchronises the whole frame
+  ## rather than one pane. The remainder goes by largest fractional part — the
+  ## columns land where the rounding was closest, so no pane is ever more than
+  ## one column from its exact share.
+  ##
+  ## `gap` is what `joinHorizontal <#joinHorizontal,openArray[string],int>`_ will
+  ## put *between* the panes, subtracted before the split so the panes plus the
+  ## gaps are `total`. Passing it here rather than adjusting afterwards is the
+  ## difference between the two procs agreeing and the caller having to.
+  ##
+  ## The one case with no good answer: `gap * (panes - 1)` larger than `total`,
+  ## where the separators alone do not fit and every pane is zero before the
+  ## split begins. The panes come back zero, which is the most this can do — the
+  ## gaps belong to the caller's `joinHorizontal`, so the row overflows whatever
+  ## is returned here. Treat it as a precondition rather than something to check
+  ## for: the exactness guarantee above is "the panes sum to
+  ## `max(total - gaps, 0)`", which is `total` minus the gaps exactly when there
+  ## is room for them.
+  if ratios.len == 0: return
+  result = newSeq[int](ratios.len)
+  let usable = total - gap * (ratios.len - 1)
+  if usable <= 0: return                        # every pane zero, never negative
+
+  var sum = 0.0
+  for r in ratios: sum += max(r, 0.0)
+  if sum <= 0.0:
+    # No weight anywhere. Even shares rather than nothing, since the caller
+    # plainly wanted `ratios.len` panes and zero of them is not a reading of
+    # that; the loop below then distributes the remainder as usual.
+    for i in 0 ..< result.len: result[i] = usable div result.len
+    for i in 0 ..< usable mod result.len: result[i].inc
+    return
+
+  # Floor each share, then hand the columns that are left to whichever panes
+  # were rounded down furthest.
+  var assigned = 0
+  var frac = newSeq[(float, int)](ratios.len)
+  for i, r in ratios:
+    let exact = max(r, 0.0) / sum * usable.float
+    result[i] = exact.int
+    assigned += result[i]
+    frac[i] = (exact - exact.int.float, i)
+  # Descending by fraction, and by index where two are equal, so the result is a
+  # function of the arguments alone — `[1, 1, 1]` into 80 has to give the same
+  # answer every run or a layout twitches between frames.
+  frac.sort(proc (a, b: (float, int)): int =
+    result = cmp(b[0], a[0])
+    if result == 0: result = cmp(a[1], b[1]))
+  for k in 0 ..< usable - assigned:
+    result[frac[k][1]].inc
+
+proc splitWidths*(total: int, parts: int, gap = 0): seq[int] =
+  ## `splitWidths <#splitWidths,int,openArray[float],int>`_ into equal shares —
+  ## the common case, and the one where getting the remainder wrong is easiest.
+  var ratios = newSeq[float](max(parts, 0))
+  for i in 0 ..< ratios.len: ratios[i] = 1.0
+  splitWidths(total, ratios, gap)
 
 proc elide*(s: string, width: int, ellipsis = "…"): string =
   ## Truncate with a marker, so a cut string is distinguishable from a short one.

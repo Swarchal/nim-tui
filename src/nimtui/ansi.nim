@@ -40,6 +40,11 @@ const
   EnableBracketedPaste* = Csi & "?2004h"
   DisableBracketedPaste* = Csi & "?2004l"
 
+  ## Focus reporting (DEC private mode 1004): `CSI I` when the window gains
+  ## focus, `CSI O` when it loses it.
+  EnableFocusReporting* = Csi & "?1004h"
+  DisableFocusReporting* = Csi & "?1004l"
+
 proc cursorUp*(n: int): string =
   if n <= 0: "" else: Csi & $n & "A"
 
@@ -48,6 +53,40 @@ proc cursorDown*(n: int): string =
 
 proc cursorTo*(row, col: int): string =
   Csi & $row & ";" & $col & "H"
+
+proc link*(text, url: string, id = ""): string =
+  ## `text` as an OSC 8 hyperlink to `url`. Terminals that do not implement it
+  ## show the text and ignore the rest.
+  ##
+  ## Costs no columns, and that falls out of what is already here rather than
+  ## needing anything new: `escapeLen <#escapeLen,string,int>`_ treats OSC as a
+  ## string sequence, so `displayWidth <#displayWidth,string>`_ already measures
+  ## one of these as just its text. That is what makes a link usable in a table
+  ## cell or a status bar without the layout drifting.
+  ##
+  ## `id` is the optional identifier that lets a terminal treat several runs as
+  ## one link — worth setting when a link is split across lines by
+  ## `wrapText <layout.html#wrapText,string,int>`_, since a terminal has no other
+  ## way to know the halves belong together and will underline them separately
+  ## on hover.
+  ##
+  ## Both parameters are sent verbatim apart from the two bytes that would end
+  ## the sequence early: a `;` in a URL is legal and would otherwise be read as
+  ## the end of the parameter list, and an `ESC` or `BEL` would terminate the
+  ## sequence in the middle of the address. They are dropped rather than
+  ## percent-encoded, since encoding a URL that is already encoded corrupts it
+  ## and this cannot tell the two apart.
+  var clean = newStringOfCap(url.len)
+  for c in url:
+    if c notin {';', Esc, '\a'}: clean.add c
+  result = "\e]8;"
+  for c in id:
+    if c notin {';', Esc, '\a'}: result.add c
+  result.add ';'
+  result.add clean
+  result.add "\e\\"
+  result.add text
+  result.add "\e]8;;\e\\"
 
 proc isFinalByte*(c: char): bool =
   ## True for the terminating byte of a CSI sequence (`@` through `~`).

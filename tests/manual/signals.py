@@ -36,6 +36,7 @@ SHOW_CURSOR = b"\x1b[?25h"
 EXIT_ALT = b"\x1b[?1049l"
 DISABLE_MOUSE = b"\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l"
 DISABLE_PASTE = b"\x1b[?2004l"
+DISABLE_FOCUS = b"\x1b[?1004l"
 RESET = b"\x1b[0m"
 
 failures = []
@@ -138,10 +139,12 @@ def case(name, sig, modes, expect):
 
 build()
 
-case("everything on", signal.SIGTERM, ["alt", "cursor", "mouse", "paste"],
+case("everything on", signal.SIGTERM,
+     ["alt", "cursor", "mouse", "paste", "focus"],
      [("the alt screen is left", EXIT_ALT),
       ("mouse reporting is turned off", DISABLE_MOUSE),
       ("bracketed paste is turned off", DISABLE_PASTE),
+      ("focus reporting is turned off", DISABLE_FOCUS),
       ("the cursor is shown again", SHOW_CURSOR),
       ("colour is reset", RESET)])
 

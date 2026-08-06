@@ -299,3 +299,97 @@ suite "a border label is one line":
     check blockHeight(b) == 5
     for line in b.split('\n'):
       check displayWidth(line) == 24
+
+suite "splitting a width":
+  # The one property that matters, asserted everywhere below: the panes plus the
+  # gaps come to exactly `total`. A row that is one column over does not misplace
+  # one pane, it wraps and desynchronises the frame.
+
+  proc exact(total: int, ratios: openArray[float], gap = 0): bool =
+    ## The panes sum to `max(total - gaps, 0)` and none is negative. That is
+    ## `total` minus the gaps exactly when the gaps fit; when they do not, every
+    ## pane is zero and the row cannot be made to fit by any return value here,
+    ## since the gaps are the caller's to draw.
+    let w = splitWidths(total, ratios, gap)
+    if w.len != ratios.len: return false
+    var sum = 0
+    for x in w:
+      if x < 0: return false
+      sum += x
+    sum == max(total - gap * (max(w.len, 1) - 1), 0)
+
+  test "the shares sum to the total, at every width":
+    for total in 0 .. 200:
+      checkpoint $total
+      check exact(total, [1.0, 1.0])
+      check exact(total, [1.0, 2.0, 1.0])
+      check exact(total, [0.2, 0.3, 0.5])
+      check exact(total, [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
+
+  test "and with gaps between them":
+    for total in 0 .. 200:
+      checkpoint $total
+      check exact(total, [1.0, 1.0], gap = 1)
+      check exact(total, [1.0, 2.0, 1.0], gap = 2)
+      check exact(total, [1.0, 1.0, 1.0, 1.0], gap = 3)
+
+  test "an even split is even where it divides":
+    check splitWidths(80, [1.0, 2.0, 1.0]) == @[20, 40, 20]
+    check splitWidths(60, 3) == @[20, 20, 20]
+    check splitWidths(100, [0.25, 0.75]) == @[25, 75]
+
+  test "weights are normalised, so they need not sum to one":
+    check splitWidths(80, [1.0, 2.0, 1.0]) == splitWidths(80, [0.25, 0.5, 0.25])
+    check splitWidths(90, [3.0, 6.0]) == splitWidths(90, [1.0, 2.0])
+
+  test "the remainder goes where the rounding was closest":
+    # 100/3 is 33.33 each: two panes get 33 and one gets 34, not 33/33/34 by
+    # position and never 33/33/33 with a column dropped.
+    check splitWidths(100, 3) == @[34, 33, 33]
+    check splitWidths(10, [1.0, 1.0, 1.0, 1.0]) == @[3, 3, 2, 2]
+
+  test "no pane is more than a column from its exact share":
+    for total in 1 .. 200:
+      let ratios = [1.0, 3.0, 5.0, 7.0]
+      var sum = 0.0
+      for r in ratios: sum += r
+      let w = splitWidths(total, ratios)
+      for i, r in ratios:
+        checkpoint $(total, i)
+        check abs(w[i].float - r / sum * total.float) < 1.0
+
+  test "the answer is a function of the arguments alone":
+    # A layout that twitched between frames would mean the tie-break depended on
+    # something other than the input.
+    for i in 0 .. 20:
+      check splitWidths(100, 7) == splitWidths(100, 7)
+      check splitWidths(37, [1.0, 1.0, 1.0]) == splitWidths(37, [1.0, 1.0, 1.0])
+
+  test "the degenerate cases are widths, not errors":
+    check splitWidths(80, newSeq[float]()).len == 0
+    check splitWidths(80, 0).len == 0
+    check splitWidths(0, 3) == @[0, 0, 0]
+    check splitWidths(-10, 3) == @[0, 0, 0]
+    check splitWidths(1, [1.0, 1.0, 1.0]) == @[1, 0, 0]
+    # Gaps alone eating the width leaves panes of zero, never negative ones —
+    # here exactly, and below where they do not even fit.
+    check splitWidths(4, 3, gap = 2) == @[0, 0, 0]
+    check splitWidths(2, 4, gap = 3) == @[0, 0, 0, 0]
+
+  test "a negative weight counts as zero rather than stealing width":
+    check splitWidths(80, [-1.0, 1.0, 1.0]) == @[0, 40, 40]
+
+  test "no weight at all is an even split, not nothing":
+    check splitWidths(90, [0.0, 0.0, 0.0]) == @[30, 30, 30]
+    check exact(100, [0.0, 0.0, 0.0])
+
+  test "the shares actually fit joinHorizontal":
+    # The two agreeing about `gap` is the point of it being a parameter here,
+    # and this is the assertion that would catch them drifting apart.
+    for total in [20, 37, 80, 120]:
+      for gap in 0 .. 2:
+        let w = splitWidths(total, 3, gap)
+        let row = joinHorizontal([padBlock("a", w[0], 1), padBlock("b", w[1], 1),
+                                  padBlock("c", w[2], 1)], gap)
+        checkpoint $(total, gap)
+        check displayWidth(row) == total

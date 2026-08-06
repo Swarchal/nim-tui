@@ -374,6 +374,44 @@ suite "bracketed paste":
     check not "".holdsPaste
     check not "abc".holdsPaste
 
+suite "focus events":
+  proc focuses(s: string): seq[bool] =
+    let (msgs, _) = parseInput(s)
+    for m in msgs:
+      if m of FocusMsg: result.add FocusMsg(m).focused
+
+  proc typed(s: string): seq[string] =
+    let (msgs, _) = parseInput(s)
+    for m in msgs:
+      if m of KeyMsg: result.add $KeyMsg(m)
+
+  test "focus in and focus out are distinguishable":
+    check focuses("\e[I") == @[true]
+    check focuses("\e[O") == @[false]
+
+  test "and are not keys":
+    check typed("\e[I\e[O").len == 0
+    let (msgs, consumed) = parseInput("\e[I")
+    check msgs.len == 1
+    check consumed == 3
+
+  test "they arrive among keys without disturbing them":
+    check typed("a\e[Ib\e[Oc") == @["a", "b", "c"]
+    check focuses("a\e[Ib\e[Oc") == @[true, false]
+
+  test "only the bare form is a focus event":
+    # `CSI I` is the whole sequence. A parameterised sequence ending in the same
+    # byte is something else, and calling it a focus change would be a lie.
+    check focuses("\e[1I").len == 0
+    check focuses("\e[5;2O").len == 0
+    check parseInput("\e[1I").consumed == 4      # still consumed, just not reported
+
+  test "a split one is held until it is whole":
+    var buf = "\e["
+    check parseInput(buf).consumed == 0
+    buf.add "I"
+    check focuses(buf) == @[true]
+
 suite "streams" :
   test "a burst of pasted text decodes in order":
     check keys("hi\r\e[A") == @["h", "i", "enter", "up"]
