@@ -49,6 +49,84 @@ suite "widgets":
     check rows[0][0 ..< 3] != "  "        # top row filled for the 100 column
     check rows[0].endsWith(" ")           # but not for the 10 column
 
+suite "line charts":
+  ## A trace rather than columns, so the assertions that matter are the width one
+  ## (a braille or quadrant glyph measured as two columns wraps the frame) and
+  ## the sub-cell bit order, which nothing dimensional can see.
+
+  const AllGlyphs = [pgBraille, pgBlocks, pgAscii]
+
+  test "a chart is exactly width x height in every glyph set":
+    let values = @[10.0, 40.0, 90.0, 20.0, 55.0, 5.0, 80.0]
+    for g in AllGlyphs:
+      for w in [1, 3, 8, 40]:
+        for h in [1, 2, 5]:
+          let rows = lineChart(values, w, h, glyphs = g)
+          checkpoint $g & " " & $w & "x" & $h
+          check rows.len == h
+          for r in rows: check displayWidth(r) == w
+
+  test "the degenerate inputs are a blank chart, not a crash":
+    for g in AllGlyphs:
+      check lineChart(@[], 4, 2, glyphs = g) == @["    ", "    "]
+      check lineChart(@[5.0], 4, 2, glyphs = g).len == 2
+      check lineChart(@[1.0, 2.0], 0, 2, glyphs = g).len == 0
+      check lineChart(@[1.0, 2.0], 4, 0, glyphs = g).len == 0
+      check lineSpark(@[], 0, glyphs = g) == ""
+
+  test "a flat series is a line along the bottom, not a lifted one":
+    # The difference from `barChart`, which has to lift a flatline off the floor
+    # because a bar of zero height is blank. A line at zero is already visible.
+    check lineChart(@[3.0, 3.0, 3.0], 3, 2, glyphs = pgAscii) == @["   ", "***"]
+    check lineChart(@[3.0, 3.0], 1, 1) == @["⣀"]
+
+  test "fewer values than sub-columns pad on the left":
+    check lineChart(@[5.0], 4, 1, glyphs = pgAscii) == @["   *"]
+    check lineSpark(@[1.0, 2.0], 4, glyphs = pgAscii) == "  **"
+
+  test "the sub-cell bits map onto the right dots":
+    # Hand-derived. Both values are in the one cell, and the step between them is
+    # drawn in the *second* sub-column, so a rise is the bottom-left dot plus the
+    # whole right column (U+28F8) and a fall is the top-left dot plus the same
+    # (U+28B9). Getting `BrailleDotBits` wrong leaves every width check above
+    # happy and draws a different picture.
+    check lineChart(@[0.0, 1.0], 1, 1, lo = 0.0, hi = 1.0) == @["⣸"]
+    check lineChart(@[1.0, 0.0], 1, 1, lo = 0.0, hi = 1.0) == @["⢹"]
+    check lineChart(@[0.0, 1.0], 1, 1, 0.0, 1.0, pgBlocks) == @["▟"]
+    check lineChart(@[1.0, 0.0], 1, 1, 0.0, 1.0, pgBlocks) == @["▜"]
+
+  test "the top and bottom rows are both reachable":
+    # A line is a position, so it rounds against `rows - 1`; a bar is a quantity
+    # and rounds against `rows`. Sharing that arithmetic loses one end or other.
+    let rows = lineChart(@[0.0, 100.0], 2, 3, 0.0, 100.0, pgAscii)
+    check rows[0] == " *"                    # the 100 reaches the top row
+    check rows[^1].startsWith("*")           # the 0 reaches the bottom one
+
+  test "the step between two values is drawn, so the trace is connected":
+    let rows = lineChart(@[0.0, 100.0], 2, 4, 0.0, 100.0, pgAscii)
+    for r in rows: check r.endsWith("*")     # the riser fills the new column
+
+  test "a fixed scale is honoured and out-of-range values are clamped":
+    let rows = lineChart(@[-50.0, 150.0], 2, 3, 0.0, 100.0, pgAscii)
+    check rows[0] == " *"
+    check rows[^1].startsWith("*")
+
+  test "a braille chart holds two values per column, a quadrant one likewise":
+    check dotsX(pgBraille) == 2 and dotsY(pgBraille) == 4
+    check dotsX(pgBlocks) == 2 and dotsY(pgBlocks) == 2
+    check dotsX(pgAscii) == 1 and dotsY(pgAscii) == 1
+    # Trailing window, as `sparkline`: the older half falls off a chart half as
+    # wide as the data, and the visible end is the recent one.
+    let values = @[0.0, 0.0, 0.0, 0.0, 9.0, 9.0]
+    check lineChart(values, 2, 1, glyphs = pgAscii) == @["**"]
+    check lineChart(values, 3, 1, glyphs = pgAscii)[0].endsWith("*")
+
+  test "a one-row chart is the sparkline shape":
+    let values = @[1.0, 5.0, 3.0, 9.0, 2.0, 7.0]
+    for g in AllGlyphs:
+      check lineSpark(values, 6, glyphs = g) == lineChart(values, 6, 1, glyphs = g)[0]
+      check displayWidth(lineSpark(values, 6, glyphs = g)) == 6
+
 suite "gradient widgets":
   test "a gradient gauge is exactly as wide as a plain one":
     for w in [1, 5, 20, 40]:
@@ -93,6 +171,29 @@ suite "gradient widgets":
     check barChart(@[5.0, 5.0], 10, 0, HeatGradient).len == 0
     for row in barChart(@[5.0, 5.0, 5.0], 10, 4, HeatGradient):
       check displayWidth(row) == 10
+
+  test "a coloured line chart matches the plain one cell for cell":
+    let values = @[1.0, 4.0, 9.0, 3.0, 7.0, 2.0, 8.0]
+    for g in [pgBraille, pgBlocks, pgAscii]:
+      let
+        plain = lineChart(values, 10, 3, glyphs = g)
+        painted = lineChart(values, 10, 3, HeatGradient, glyphs = g)
+      check painted.len == plain.len
+      for i in 0 ..< plain.len:
+        checkpoint $g & " row " & $i
+        check painted[i].stripAnsi == plain[i]
+        check displayWidth(painted[i]) == 10
+      check lineSpark(values, 10, HeatGradient, glyphs = g).stripAnsi ==
+            lineSpark(values, 10, glyphs = g)
+
+  test "a coloured line chart colours a cell by how high the trace got in it":
+    # The topmost dot, so the colour and the glyph say the same thing. A cell the
+    # trace never entered is left unstyled rather than painted at the floor.
+    let g = gradient(hex"#000000", hex"#ffffff")
+    let rows = lineChart(@[0.0, 100.0], 2, 2, g, 0.0, 100.0, pgAscii)
+    check "38;2;255;255;255" in rows[0]      # the top row is the far end of the ramp
+    check "38;2;0;0;0" in rows[^1]
+    check rows[0].stripAnsi == " *"
 
 suite "tab bar":
   test "a width is honoured exactly":
