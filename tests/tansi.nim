@@ -270,8 +270,20 @@ suite "hyperlinks":
     check s.endsWith("\e]8;;\e\\")
 
   test "an id is carried when given and absent when not":
-    check ";42;" in link("x", "http://a", id = "42")
+    # As `id=42`, not as a bare `42`: the field before the URL is a list of
+    # `key=value` pairs and a terminal looks for the key. Written bare it is not
+    # a differently-spelled id but no id at all — the sequence stays well formed
+    # and the link still works, so the only symptom is that the one thing the
+    # parameter is for quietly does not happen.
+    check link("x", "http://a", id = "42").startsWith("\e]8;id=42;")
     check link("x", "http://a").startsWith("\e]8;;")
+
+  test "an id costs no columns and cannot introduce a key of its own":
+    # `:` separates pairs and `=` separates a pair, so either one inside a value
+    # would start a key the terminal does not know.
+    let s = link("x", "http://a", id = "a;b:c=d")
+    check displayWidth(s) == 1
+    check s.startsWith("\e]8;id=abcd;")
 
   test "bytes that would end the sequence early are dropped":
     # A `;` in a URL is legal and would otherwise read as the end of the

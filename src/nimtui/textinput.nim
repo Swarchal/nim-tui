@@ -30,8 +30,28 @@ proc initTextInput*(placeholder = "", mask = Rune(0)): TextInput =
 proc text*(ti: TextInput): string =
   $ti.runes
 
+proc flattened(r: Rune): Rune {.inline.} =
+  ## A control rune becomes a space; everything else is itself.
+  ##
+  ## Every way a rune enters `runes` goes through this, which is the whole of the
+  ## rule: a control character is zero columns to `runeWidth` and an *action* to
+  ## the terminal, so one stored raw makes `render` measure a field wider than
+  ## what gets drawn — the frame-desynchronising failure rather than a cosmetic
+  ## one — and `displayWidth` agrees with the miscount, so nothing here can see
+  ## it. `ansi.oneLine` is the wrong tool at this boundary for the reason
+  ## `insert(string) <#insert,TextInput,string>`_ gives: it preserves escape
+  ## sequences, and an `ESC` in `runes` is a rune, not styling.
+  if r.isControl: Rune(' ') else: r
+
 proc `text=`*(ti: var TextInput, s: string) =
-  ti.runes = s.toRunes
+  ## Replace the contents, cursor to the end.
+  ##
+  ## Flattened like every other entry point: this is the one that takes a string
+  ## straight from outside — a config value, a file, an argument — and so the one
+  ## least likely to have been through anything that would have caught a control
+  ## character already.
+  ti.runes = newSeqOfCap[Rune](s.len)
+  for r in s.runes: ti.runes.add r.flattened
   ti.cursor = ti.runes.len
 
 proc clear*(ti: var TextInput) =
@@ -42,7 +62,14 @@ proc isEmpty*(ti: TextInput): bool =
   ti.runes.len == 0
 
 proc insert*(ti: var TextInput, r: Rune) =
-  ti.runes.insert(r, ti.cursor)
+  ## Insert one rune at the cursor. A control rune becomes a space, per
+  ## `flattened`_ — `handleKey`'s catch-all comes through here, and while
+  ## `input <input.html>`_ names every C0 byte and DEL as a key before it could
+  ## reach this, its generic UTF-8 fallback decodes *any* well-formed multi-byte
+  ## sequence to a `kRune` without asking what it is. A C1 control arriving in a
+  ## paste typed as keystrokes — which is the normal case whenever
+  ## `poBracketedPaste` is off — takes exactly that route.
+  ti.runes.insert(r.flattened, ti.cursor)
   ti.cursor.inc
 
 proc insert*(ti: var TextInput, s: string) =
@@ -57,8 +84,7 @@ proc insert*(ti: var TextInput, s: string) =
   ## `oneLine`'s reason: dropping a newline runs the last word of one line into
   ## the first of the next.
   var rs = newSeqOfCap[Rune](s.len)
-  for r in s.runes:
-    rs.add(if r.isControl: Rune(' ') else: r)
+  for r in s.runes: rs.add r.flattened
   if rs.len == 0: return
   # One shift of the tail, not one per rune. `seq.insert` moves everything after
   # the cursor for each rune inserted, which on a 4 KB paste is millions of

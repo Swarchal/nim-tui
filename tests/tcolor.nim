@@ -108,6 +108,24 @@ suite "colour arithmetic":
       check lerp(hex"#123456", hex"#abcdef", 0.0, space) == hex"#123456"
       check lerp(hex"#123456", hex"#abcdef", 1.0, space) == hex"#abcdef"
 
+  test "an endpoint keeps its kind, not just its colour":
+    # The hex cases above cannot see this, since resolving a `ckRgb` is a no-op.
+    # A palette index resolved to the xterm default for it is a *different*
+    # colour by the time `sgr` degrades it — `ckAnsi` is passed through as the
+    # index the caller chose and `ckRgb` is re-quantised — and the first sixteen
+    # are exactly the entries a user's theme remaps.
+    for space in [msOklab, msSrgb]:
+      check lerp(ansiColor(2), ansiColor(9), 0.0, space) == ansiColor(2)
+      check lerp(ansiColor(2), ansiColor(9), 1.0, space) == ansiColor(9)
+
+  test "an interior stop comes back as the colour it was written as":
+    # Where the above reaches production: `at` has a fast path for the first and
+    # last stop, so it was only a *middle* one that went through `lerp` with t
+    # resolving to 0 or 1 and came back converted.
+    let g = gradient({0.0: ansiColor(1), 0.5: ansiColor(2), 1.0: ansiColor(3)})
+    check g.at(0.5) == ansiColor(2)
+    check g.ramp(3)[1] == ansiColor(2)
+
   test "msSrgb still mixes the bytes":
     # The pin on the old behaviour: this is what every naive implementation
     # does, it is what this one did before Oklab, and a caller reproducing a

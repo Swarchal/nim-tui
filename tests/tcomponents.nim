@@ -147,6 +147,33 @@ suite "text input editing":
     check "\n" notin ti.text
     check ti.text == "a b [Ac"
 
+  test "every way in flattens, not just the bulk one":
+    # The bulk insert was flattened when it was added and the other two entry
+    # points were not, which left the rule true of the path that had the least
+    # need of it. `input`'s generic UTF-8 fallback decodes any well-formed
+    # sequence to a `kRune` without asking what it is, so a C1 control reaches
+    # the single-rune path; `text=` takes a string straight from outside.
+    var ti = initTextInput()
+    ti.insert Rune(0x0085)                  # NEL, a C1 control
+    ti.insert Rune('a')
+    check ti.text == " a"
+
+    ti = initTextInput()
+    ti.text = "a\nb\e c"
+    check "\e" notin ti.text
+    check "\n" notin ti.text
+    check ti.text == "a b  c"          # the ESC became one space, beside the real one
+    check ti.cursor == ti.runes.len
+
+  test "a flattened rune is measured as the space it is drawn as":
+    # The failure this prevents is invisible to a width assertion made in terms
+    # of `runes`: a control is zero columns to `runeWidth` and an action to the
+    # terminal, so the field measures itself consistently and still draws wrong.
+    var ti = initTextInput()
+    ti.insert Rune(0x0085)
+    for w in [4, 10, 20]:
+      check displayWidth(ti.render(w)) == w
+
   test "an empty bulk insert changes nothing":
     var ti = initTextInput()
     ti.text = "abc"

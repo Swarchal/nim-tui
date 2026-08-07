@@ -302,8 +302,15 @@ proc lerp*(a, b: Color, t: float, space = msOklab): Color =
   if a.kind == ckDefault: return b
   if b.kind == ckDefault: return a
   let x = clamp(t, 0.0, 1.0)
-  if x <= 0.0: return a.toRgb
-  if x >= 1.0: return b.toRgb
+  # `a` and `b`, not `a.toRgb` and `b.toRgb`: exactly is exactly, and `toRgb`
+  # resolves a palette index into the xterm default for it. That is a no-op for
+  # a `ckRgb` stop, which is why it looked harmless, but it turns an endpoint the
+  # caller wrote as `ansiColor(2)` into `rgb(0, 128, 0)` — and `sgr` treats the
+  # two differently on purpose, so under `cpAnsi256` the stop comes out as cube
+  # index 28 rather than as index 2. The first sixteen are precisely the entries
+  # a user's theme remaps, so that is the caller's green replaced by xterm's.
+  if x <= 0.0: return a
+  if x >= 1.0: return b
   case space
   of msSrgb:
     let

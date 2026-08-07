@@ -8,6 +8,13 @@
 ## they are separate options that all map to `tmMouse`: the interesting case is
 ## that the *same* teardown undoes each of them.
 ##
+## `out:<path>` draws to that tty instead of to stdout, which is how the driver
+## gets input and output onto two different devices. `run` takes them as two
+## parameters, so they need not be the same one — and the armed restore has to
+## write its escapes to the one being *drawn* to while putting the `Termios` back
+## on the one raw mode was set on. Under `pty.fork` alone those are the same fd
+## and a handler that confuses them looks perfect.
+##
 ## It renders a line and then waits. That matters for the assertion about the
 ## trailing newline: the scrollback path emits one only when a block is on
 ## screen, and a program killed before its first frame is the case the emergency
@@ -16,7 +23,7 @@
 ## Deliberately not named `t*`, so `nimble test` does not compile it — it is a
 ## fixture, and the assertions are in the driver.
 
-import std/os
+import std/[os, strutils]
 import nimtui
 
 type Model = object
@@ -31,9 +38,12 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
 proc view(m: Model): string =
   "holding the terminal, tick " & $m.ticks
 
-var options: set[ProgramOption]
+var
+  options: set[ProgramOption]
+  outPath = ""
 for i in 1 .. paramCount():
-  case paramStr(i)
+  let arg = paramStr(i)
+  case arg
   of "alt": options.incl poAltScreen
   of "cursor": options.incl poHideCursor
   of "clicks": options.incl poMouseClicks
@@ -41,7 +51,13 @@ for i in 1 .. paramCount():
   of "allmotion": options.incl poMouseAllMotion
   of "paste": options.incl poBracketedPaste
   of "focus": options.incl poFocusReporting
-  else: quit("unknown mode: " & paramStr(i))
+  else:
+    if arg.startsWith("out:"): outPath = arg[4 .. ^1]
+    else: quit("unknown mode: " & arg)
 
-discard newProgram(Model(), update, view, options = options,
-                   initCmd = tick(initDuration(milliseconds = 50))).run()
+let program = newProgram(Model(), update, view, options = options,
+                         initCmd = tick(initDuration(milliseconds = 50)))
+if outPath.len > 0:
+  discard program.run(input = stdin, output = open(outPath, fmWrite))
+else:
+  discard program.run()

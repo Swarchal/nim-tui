@@ -88,14 +88,23 @@ proc takeResizePending*(): bool =
 const MaxRestoreBytes* = 128
   ## Headroom for the longest sequence `armRestore
   ## <#armRestore,Tty,bool,bool,bool,bool>`_ can be asked to hold. The worst case
-  ## today is 66 bytes; `armRestore` asserts rather than truncating, so
+  ## today is 74 bytes; `armRestore` asserts rather than truncating, so
   ## lengthening one of the escapes in `nimtui/ansi <ansi.html>`_ fails a test
   ## rather than silently emitting half of it.
 
 type SigAtomic {.importc: "sig_atomic_t", header: "<signal.h>".} = cint
 
 var
-  armedFd: cint = -1                        ## the tty, or -1 when nothing is armed
+  armedOutFd: cint = -1
+    ## Where the teardown escapes go, or -1 when nothing is armed. The *output*
+    ## side, like every other escape writer here — `input` and `output` are two
+    ## parameters of `run` and need not be the same device, and a restore written
+    ## to the one being read from leaves the alt screen, the cursor and the mouse
+    ## exactly as the signal found them on the one being drawn to.
+  armedInFd: cint = -1
+    ## Where the `Termios` goes back, which is the *input* side: that is the fd
+    ## `enterRawMode` called `tcsetattr` on, and putting the settings back on the
+    ## other one restores nothing and modifies a terminal that was never touched.
   armedTermios: Termios                     ## the settings to put back
   armedBytes: array[MaxRestoreBytes, char]
     ## Precomputed, and a fixed array rather than a string: a Nim string is a
@@ -114,7 +123,7 @@ proc emergencyRestore*() =
   ##
   ## Public so an application that installs its own handler for one of these
   ## signals can still leave the terminal usable.
-  if armedFd < 0: return
+  if armedOutFd < 0: return
   # Not atomic, deliberately: the window is a few instructions and the only
   # consequence of losing the race is writing the same escapes twice.
   if restoreDone != 0: return
@@ -122,15 +131,16 @@ proc emergencyRestore*() =
   var off = 0
   let total = armedLen.int
   while off < total:
-    let n = write(armedFd, addr armedBytes[off], total - off)
+    let n = write(armedOutFd, addr armedBytes[off], total - off)
     if n <= 0: break            # the tty may already be gone: SIGHUP's normal case
     off += n.int
-  discard tcsetattr(armedFd, TCSAFLUSH, addr armedTermios)
+  discard tcsetattr(armedInFd, TCSAFLUSH, addr armedTermios)
 
 proc disarmRestore*() =
   ## Forget the armed state. `exitRawMode <#exitRawMode,Tty>`_ does this, so a
   ## normal exit needs no extra call.
-  armedFd = -1
+  armedOutFd = -1
+  armedInFd = -1
   armedLen = 0
 
 proc onTerminateSignal(sig: cint) {.noconv.} =
@@ -338,7 +348,8 @@ proc armRestore*(t: Tty, modes: set[TerminalMode]) =
   for i, c in bytes: armedBytes[i] = c
   armedTermios = t.saved
   restoreDone = 0
-  armedFd = t.input.getFileHandle()
+  armedInFd = t.input.getFileHandle()
+  armedOutFd = t.output.getFileHandle()
   armedLen = bytes.len.SigAtomic     # last: see the declaration
 
 proc enableMouse*(t: Tty, tracking: MouseTracking) =

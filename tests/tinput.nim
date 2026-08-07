@@ -406,6 +406,14 @@ suite "focus events":
     check focuses("\e[5;2O").len == 0
     check parseInput("\e[1I").consumed == 4      # still consumed, just not reported
 
+  test "a private marker is parameterisation too":
+    # It does not land in `params`, being parsed out ahead of them — so guarding
+    # on `params.len` alone let `\e[?I` through as a focus event.
+    for private in "<?>=":
+      check focuses("\e[" & private & "I").len == 0
+      check focuses("\e[" & private & "O").len == 0
+      check parseInput("\e[" & private & "I").consumed == 4
+
   test "a split one is held until it is whole":
     var buf = "\e["
     check parseInput(buf).consumed == 0

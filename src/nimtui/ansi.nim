@@ -78,18 +78,29 @@ proc link*(text, url: string, id = ""): string =
   ## way to know the halves belong together and will underline them separately
   ## on hover.
   ##
-  ## Both parameters are sent verbatim apart from the two bytes that would end
-  ## the sequence early: a `;` in a URL is legal and would otherwise be read as
-  ## the end of the parameter list, and an `ESC` or `BEL` would terminate the
-  ## sequence in the middle of the address. They are dropped rather than
-  ## percent-encoded, since encoding a URL that is already encoded corrupts it
-  ## and this cannot tell the two apart.
+  ## It goes out as `id=<value>`, which is the part that is easy to get wrong and
+  ## impossible to notice: the field before the URL is a `:`-separated list of
+  ## `key=value` pairs, not a bare value, and `id` is the only key defined. A
+  ## terminal looks for the `id=`, so writing the value on its own is not a
+  ## differently-spelled identifier but no identifier at all — the sequence stays
+  ## well formed, the link still works, and the one thing the parameter exists
+  ## for silently does not happen.
+  ##
+  ## Both parameters are sent verbatim apart from the bytes that would end the
+  ## sequence early or be read as structure: a `;` in a URL is legal and would
+  ## otherwise be read as the end of the parameter list, an `ESC` or `BEL` would
+  ## terminate the sequence in the middle of the address, and a `:` or `=` in an
+  ## `id` would start a key the terminal does not know. They are dropped rather
+  ## than percent-encoded, since encoding a URL that is already encoded corrupts
+  ## it and this cannot tell the two apart.
   var clean = newStringOfCap(url.len)
   for c in url:
     if c notin {';', Esc, '\a'}: clean.add c
   result = "\e]8;"
-  for c in id:
-    if c notin {';', Esc, '\a'}: result.add c
+  if id.len > 0:
+    result.add "id="
+    for c in id:
+      if c notin {';', ':', '=', Esc, '\a'}: result.add c
   result.add ';'
   result.add clean
   result.add "\e\\"

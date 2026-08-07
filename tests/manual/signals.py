@@ -111,6 +111,61 @@ def play(sig, modes):
     return tail, raw, attrs, status
 
 
+def play_split(sig, modes):
+    """As `play`, but with input and output on two different ttys.
+
+    `run` takes them as two parameters, so this is a shape the API invites, and
+    it is the only one that can tell whether the armed restore knows which is
+    which: under `pty.fork` alone fd 0 and fd 1 are the same device, so a handler
+    writing its escapes to the input side passes every other case in this file.
+
+    Returns (out_tail, in_tail, attrs, status) — the escapes belong in the first
+    and the raw-mode `Termios` belongs to the tty behind the second.
+    """
+    out_master, out_slave = pty.openpty()
+    out_name = os.ttyname(out_slave)
+
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.environ["TERM"] = "xterm-256color"
+        os.close(out_master)
+        os.close(out_slave)
+        os.execv(PROG, [PROG] + modes + ["out:" + out_name])
+    os.close(out_slave)
+
+    def drain(until, into):
+        while time.time() < until:
+            r, _, _ = select.select([fd, out_master], [], [], 0.05)
+            for ready in r:
+                try:
+                    chunk = os.read(ready, 65536)
+                except OSError:
+                    continue
+                into[ready] += chunk
+
+    bufs = {fd: b"", out_master: b""}
+    drain(time.time() + 1.5, bufs)
+
+    before = {k: len(v) for k, v in bufs.items()}
+    os.kill(pid, sig)
+    drain(time.time() + 1.5, bufs)
+
+    _, status = os.waitpid(pid, 0)
+    attrs = termios.tcgetattr(fd)
+    for handle in (fd, out_master):
+        try:
+            os.close(handle)
+        except OSError:
+            pass
+
+    out_tail = bufs[out_master][before[out_master]:]
+    in_tail = bufs[fd][before[fd]:]
+    if VERBOSE:
+        print("    output tty after the signal: " + repr(out_tail))
+        print("    input tty after the signal:  " + repr(in_tail))
+    return out_tail, in_tail, attrs, status
+
+
 def cooked(attrs):
     lflag = attrs[3]
     return bool(lflag & termios.ECHO) and bool(lflag & termios.ICANON)
@@ -164,6 +219,31 @@ case("interrupted", signal.SIGINT, ["alt"],
 
 case("quit", signal.SIGQUIT, ["mouse"],
      [("mouse reporting is turned off", DISABLE_MOUSE)])
+
+
+def split_case(name, sig, modes, expect):
+    print("%s, killed by %s:" % (name, signal.Signals(sig).name))
+    out_tail, in_tail, attrs, status = play_split(sig, modes)
+
+    for label, seq in expect:
+        check(seq in out_tail, "  " + label + ", on the tty being drawn to")
+        check(seq not in in_tail, "  and not on the one being read from")
+
+    # The other half of the same confusion: raw mode was set on the input side,
+    # so that is where the saved settings have to go back. Putting them on the
+    # output tty restores nothing and modifies a terminal never touched.
+    check(cooked(attrs), "  ECHO and ICANON are back on the input tty")
+
+    check(os.WIFSIGNALED(status) and os.WTERMSIG(status) == sig,
+          "  killed by %s, so the exit status stays honest"
+          % signal.Signals(sig).name)
+
+
+split_case("input and output on different ttys", signal.SIGTERM,
+           ["alt", "cursor", "mouse"],
+           [("the alt screen is left", EXIT_ALT),
+            ("the cursor is shown again", SHOW_CURSOR),
+            ("mouse reporting is turned off", DISABLE_MOUSE)])
 
 print()
 if failures:
