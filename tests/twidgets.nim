@@ -134,6 +134,40 @@ suite "gradient widgets":
         check displayWidth(gauge(f, w, HeatGradient)) == w
         check displayWidth(gauge(f, w, HeatGradient)) == displayWidth(gauge(f, w))
 
+  test "a half-block gauge is exactly as wide as a solid one":
+    # The bar is `▌` per cell with the next ramp point behind it, so the cell
+    # count is unchanged and only the colour resolution doubles. A width check is
+    # what catches the alternative — a caller reading `▌` as half a column.
+    for w in [1, 5, 20, 40]:
+      for f in [0.0, 0.01, 0.25, 0.5, 0.73, 0.999, 1.0]:
+        checkpoint "w=" & $w & " f=" & $f
+        check displayWidth(gauge(f, w, HeatGradient)) == w
+        check displayWidth(gauge(f, w, HeatGradient)) ==
+              displayWidth(gauge(f, w, HeatGradient, halfBlock = false))
+
+  test "a half-block cell carries two ramp points, one in the background":
+    let bar = gauge(1.0, 8, HeatGradient)
+    check "▌" in bar
+    check "38;2;" in bar              # a foreground
+    check "48;2;" in bar              # and a background, which is the new half
+    check "█" notin bar
+    # Turned off, it is the old bar exactly: one colour per cell, no background.
+    let solid = gauge(1.0, 8, HeatGradient, halfBlock = false)
+    check "█" in solid
+    check "48;2;" notin solid
+
+  test "half-block turns itself off when there is no colour to carry it":
+    # Under `cpNoColor` `sgr` emits nothing, so a row of bare `▌` would draw a
+    # bar half the width it means — worse than the colour the user asked to be
+    # rid of. This is the one test here that touches the profile global, so it
+    # puts it back.
+    let saved = colorProfile()
+    setColorProfile(cpNoColor)
+    check gauge(0.62, 30, HeatGradient) ==
+          gauge(0.62, 30, HeatGradient, halfBlock = false)
+    check "▌▌" notin gauge(1.0, 30, HeatGradient)
+    setColorProfile(saved)
+
   test "the gauge ramp is laid over the whole bar, not the filled part":
     # Otherwise every cell recolours as the bar grows, which reads as flashing,
     # and 100% of a heat gradient looks the same as 10% of it.

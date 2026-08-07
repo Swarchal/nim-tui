@@ -253,7 +253,11 @@ proc helpDialog(m: Model): string =
     "",
     t.mutedStyle.render("any key to dismiss"),
   ].join("\n")
-  panel(DoubleBorder)
+  # A half-block border, which is the one place in the examples that shows what
+  # they are for: the frame's ink faces outward, so with the shadow under it the
+  # dialog reads as a slab lifted off the frame behind rather than as a second
+  # wire box drawn over the first.
+  panel(OuterHalfBlockBorder)
     .title(" keys ", aCenter)
     .pad(2)
     .shadow(t.mutedStyle)

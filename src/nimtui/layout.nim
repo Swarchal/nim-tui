@@ -49,8 +49,18 @@ type
     ## `nimtui/table <table.html>`_; a hand-written `Border` that leaves them
     ## empty still renders a correct panel, and a table falls back to
     ## `horizontal` for whichever junctions are missing.
+    ##
+    ## The last four are for borders whose edges are not all the same glyph — a
+    ## half-block frame is `▀` along the top against `▄` along the bottom, and
+    ## `▌` up the left against `▐` down the right. Each is empty by default and
+    ## falls back to `horizontal` or `vertical`, the same way the junctions do,
+    ## so every border written before they existed is unaffected and a border
+    ## that only sets `horizontal` and `vertical` still draws all four sides.
+    ## Read them through `topEdge <#topEdge,Border>`_ and its three neighbours
+    ## rather than directly, which is where that fallback lives.
     topLeft*, topRight*, bottomLeft*, bottomRight*, horizontal*, vertical*: string
     teeDown*, teeUp*, teeRight*, teeLeft*, cross*: string
+    top*, bottom*, left*, right*: string
 
 const
   RoundedBorder* = Border(topLeft: "╭", topRight: "╮", bottomLeft: "╰",
@@ -87,6 +97,40 @@ const
     ## Occupies the same cells as any other border but draws nothing, so a panel
     ## can be given breathing room without a visible frame — and so a row of
     ## panes stays aligned when only some of them are framed.
+  BlockBorder* = Border(topLeft: "█", topRight: "█", bottomLeft: "█",
+                        bottomRight: "█", horizontal: "█", vertical: "█",
+                        teeDown: "█", teeUp: "█", teeRight: "█",
+                        teeLeft: "█", cross: "█")
+    ## A solid frame one cell thick. Reads as a slab rather than a wire frame,
+    ## and is the loudest of these — it takes as much ink as the content.
+  OuterHalfBlockBorder* = Border(topLeft: "▛", topRight: "▜", bottomLeft: "▙",
+                                 bottomRight: "▟", horizontal: "▀",
+                                 vertical: "▌", bottom: "▄", right: "▐")
+    ## `BlockBorder`'s weight at half the ink: each edge is the half of its cell
+    ## that faces *outward*, so the frame reads as a slab with the content
+    ## recessed into it. The effect is entirely in the border style's foreground
+    ## — this draws a shape, and it is the colour that makes it a panel.
+  InnerHalfBlockBorder* = Border(topLeft: "▗", topRight: "▖", bottomLeft: "▝",
+                                 bottomRight: "▘", horizontal: "▄",
+                                 vertical: "▐", bottom: "▀", right: "▌")
+    ## The same frame turned inward, so the ink faces the content and the panel
+    ## reads as punched out of the background rather than laid on top of it.
+
+proc topEdge*(b: Border): string =
+  ## The glyph for the top edge, falling back to `horizontal`.
+  if b.top.len > 0: b.top else: b.horizontal
+
+proc bottomEdge*(b: Border): string =
+  ## The glyph for the bottom edge, falling back to `horizontal`.
+  if b.bottom.len > 0: b.bottom else: b.horizontal
+
+proc leftEdge*(b: Border): string =
+  ## The glyph for the left edge, falling back to `vertical`.
+  if b.left.len > 0: b.left else: b.vertical
+
+proc rightEdge*(b: Border): string =
+  ## The glyph for the right edge, falling back to `vertical`.
+  if b.right.len > 0: b.right else: b.vertical
 
 proc blockWidth*(s: string): int =
   ## Visible width of the widest line.
@@ -488,13 +532,16 @@ proc shadow*(p: Panel, style = Style().faint()): Panel =
   result.hasShadow = true
   result.shadowStyle = style
 
-proc borderRow(p: Panel, left, right, label: string, labelStyle: Style,
+proc borderRow(p: Panel, left, right, h, label: string, labelStyle: Style,
                align: Align, inner: int): string =
   ## One horizontal edge, with a label let into it.
   ##
+  ## The edge glyph is a parameter because the top and the bottom need not be the
+  ## same one — a half-block frame is `▀` above and `▄` below — and this proc
+  ## draws both.
+  ##
   ## Border runs are styled separately from the label rather than styling the
   ## whole row, so a reset inside the label cannot leak into the border colour.
-  let h = p.borderChars.horizontal
   # The leading horizontal is part of the interior, so it only exists when there
   # is an interior. Emitting it unconditionally made the top row one column wider
   # than every other row of a panel with `width` of 2 or less.
@@ -537,28 +584,31 @@ proc render*(p: Panel, content: string, width, height: int): string =
     innerW = max(inner - 2 * hpad, 0)
     innerH = max(interior - 2 * vpad, 0)
     body = padBlockLines(content, innerW, innerH)
-    v = p.borderStyle.render(p.borderChars.vertical)
+    vLeft = p.borderStyle.render(p.borderChars.leftEdge)
+    vRight = p.borderStyle.render(p.borderChars.rightEdge)
     gutter = spaces(hpad)
     blank = spaces(inner)
 
   let top = p.borderRow(p.borderChars.topLeft, p.borderChars.topRight,
+                        p.borderChars.topEdge,
                         p.titleText, p.titleStyle, p.titleAlignment, inner)
   let bottom = p.borderRow(p.borderChars.bottomLeft, p.borderChars.bottomRight,
+                           p.borderChars.bottomEdge,
                            p.footerText, p.footerStyle, p.footerAlignment, inner)
 
   var bytes = top.len + bottom.len + 2
-  for line in body: bytes += line.len + 2 * (v.len + hpad) + 1
+  for line in body: bytes += line.len + vLeft.len + vRight.len + 2 * hpad + 1
   var res = newStringOfCap(bytes)
   res.add top
 
   template row(cells: string) =
     res.add '\n'
-    res.add v
+    res.add vLeft
     # `renderOver`: the body arrives pre-styled as a matter of course, and a
     # reset in it ends the fill's background for every column after it — the pad
     # to the right of a styled line comes out bare. The fill is the floor.
     res.add(if p.fillStyle.isEmpty: cells else: p.fillStyle.renderOver(cells))
-    res.add v
+    res.add vRight
 
   for _ in 0 ..< vpad: row(blank)
   for line in body: row(gutter & line & gutter)

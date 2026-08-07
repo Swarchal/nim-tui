@@ -12,6 +12,12 @@
 ## echo g.at(0.5)          # the colour halfway along
 ## ```
 ##
+## Mixing is perceptual: `lerp <#lerp,Color,Color,float,MixSpace>`_ and everything
+## built on it work in Oklab, so a ramp between two colours passes through the
+## colours a person would draw between them rather than through the desaturated
+## grey that mixing the bytes gives. `msSrgb` asks for the byte arithmetic where
+## a caller needs it — see `MixSpace <#MixSpace>`_.
+##
 ## Every constructor is usable in a `const`, which is the point of keeping the
 ## parsing free of exceptions on the happy path: `const Accent = hex"#7b2ff7"`
 ## costs nothing at runtime, and a typo in the literal is a compile error.
@@ -216,22 +222,103 @@ proc hsl*(h, s, l: float): Color =
 
 # --- arithmetic ---------------------------------------------------------------
 
-proc lerp*(a, b: Color, t: float): Color =
-  ## Mix `a` into `b`, `t` from 0 to 1, componentwise in sRGB.
+type
+  MixSpace* = enum
+    ## Which space `lerp <#lerp,Color,Color,float,MixSpace>`_ mixes in.
+    ##
+    ## `msOklab` is perceptual and is the default: a ramp between two colours
+    ## that are not near-neighbours in hue passes through the colours a person
+    ## would draw between them. `msSrgb` mixes the bytes, which is what every
+    ## naive implementation does and what this one did — blue to yellow sags
+    ## through a desaturated grey at the midpoint, because sRGB's axes are not
+    ## perceptual and the shortest line between two of its corners leaves the
+    ## saturated part of the space.
+    ##
+    ## It stays reachable because it is exact and cheap, and because a caller
+    ## reproducing a palette from somewhere else wants the arithmetic that
+    ## palette was built with.
+    msOklab,
+    msSrgb
+
+const SrgbToLinear = block:
+  ## sRGB byte to linear light. A table because the forward direction only ever
+  ## sees an integer channel, so all 256 answers are known at compile time —
+  ## which removes three `pow`s per conversion and makes the table exact rather
+  ## than an approximation of one.
+  var t: array[256, float]
+  for i in 0 .. 255:
+    let c = i.float / 255.0
+    t[i] = if c <= 0.04045: c / 12.92 else: pow((c + 0.055) / 1.055, 2.4)
+  t
+
+proc linearToSrgb(x: float): int =
+  ## The way back, which does need a `pow` — the input is an arbitrary float.
+  let c = clamp(x, 0.0, 1.0)
+  let s = if c <= 0.0031308: c * 12.92 else: 1.055 * pow(c, 1.0 / 2.4) - 0.055
+  (s * 255.0).round.int
+
+proc toOklab(c: Color): tuple[l, a, b: float] =
+  ## Björn Ottosson's Oklab: linear sRGB through the LMS cone responses, cube
+  ## rooted, then rotated into a lightness and two opponent axes.
+  let
+    p = c.toRgb
+    r = SrgbToLinear[p.r]
+    g = SrgbToLinear[p.g]
+    b = SrgbToLinear[p.b]
+    l = cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b)
+    m = cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b)
+    s = cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b)
+  (0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
+   1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
+   0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s)
+
+proc fromOklab(lab: tuple[l, a, b: float]): Color =
+  ## The inverse. The cubes are the cheap direction; only the sRGB transfer
+  ## function at the end costs anything.
+  let
+    l = lab.l + 0.3963377774 * lab.a + 0.2158037573 * lab.b
+    m = lab.l - 0.1055613458 * lab.a - 0.0638541728 * lab.b
+    s = lab.l - 0.0894841775 * lab.a - 1.2914855480 * lab.b
+    l3 = l * l * l
+    m3 = m * m * m
+    s3 = s * s * s
+  rgb(linearToSrgb(4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3),
+      linearToSrgb(-1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3),
+      linearToSrgb(-0.0041960863 * l3 - 0.7034186147 * m3 + 1.7076147010 * s3))
+
+proc lerp*(a, b: Color, t: float, space = msOklab): Color =
+  ## Mix `a` into `b`, `t` from 0 to 1, perceptually unless told otherwise.
   ##
   ## An unknown (`ckDefault`) endpoint has no components to mix, so the *other*
   ## endpoint is returned rather than the black it is not: treating the
   ## terminal's own colour as `#000000` silently produces a ramp that is wrong
   ## on every light background.
+  ##
+  ## Both endpoints come back exactly, by returning them rather than by mixing
+  ## them: a round trip through Oklab is a float conversion in each direction and
+  ## can land a component one off, and a gradient whose first colour is not quite
+  ## the colour it was given is the kind of wrong that is never noticed and never
+  ## forgiven. `Gradient.at <#at,Gradient,float>`_ clamps into this.
   if a.kind == ckDefault: return b
   if b.kind == ckDefault: return a
-  let
-    x = clamp(t, 0.0, 1.0)
-    p = a.toRgb
-    q = b.toRgb
-  rgb((p.r.float + (q.r - p.r).float * x).round.int,
-      (p.g.float + (q.g - p.g).float * x).round.int,
-      (p.b.float + (q.b - p.b).float * x).round.int)
+  let x = clamp(t, 0.0, 1.0)
+  if x <= 0.0: return a.toRgb
+  if x >= 1.0: return b.toRgb
+  case space
+  of msSrgb:
+    let
+      p = a.toRgb
+      q = b.toRgb
+    rgb((p.r.float + (q.r - p.r).float * x).round.int,
+        (p.g.float + (q.g - p.g).float * x).round.int,
+        (p.b.float + (q.b - p.b).float * x).round.int)
+  of msOklab:
+    let
+      p = a.toOklab
+      q = b.toOklab
+    fromOklab((p.l + (q.l - p.l) * x,
+               p.a + (q.a - p.a) * x,
+               p.b + (q.b - p.b) * x))
 
 proc lighten*(c: Color, amount: float): Color =
   ## Raise lightness by `amount` (0..1) in HSL, keeping hue and saturation.
@@ -345,11 +432,52 @@ proc ramp*(g: Gradient, n: int): seq[Color] =
   ##
   ## Sampling once into a seq is the right shape for colouring a row of cells:
   ## the alternative, calling `at` per cell, redoes the stop search every time.
+  ##
+  ## It also converts each stop into Oklab once and reuses it across every sample
+  ## that falls in the same segment, where `at` has to convert both ends on every
+  ## call — two thirds of the work of a perceptual mix is in that direction, and
+  ## a ramp is where the samples come in bulk. Every colour it returns is exactly
+  ## `at(i / (n - 1))`, which `tcolor.nim` pins: this is the same arithmetic with
+  ## the repeated part hoisted, not a second implementation of it.
   if n <= 0: return @[]
   if n == 1: return @[g.at(0.5)]
   result = newSeqOfCap[Color](n)
+  var
+    seg = -1                     ## which segment `lo`/`hi` were converted from
+    lo, hi: tuple[l, a, b: float]
   for i in 0 ..< n:
-    result.add g.at(i.float / (n - 1).float)
+    let x = i.float / (n - 1).float
+    # The three cases `at` answers without mixing at all, in its order.
+    if g.stops.len == 1 or x <= g.stops[0].pos:
+      result.add g.stops[0].color
+      continue
+    if x >= g.stops[^1].pos:
+      result.add g.stops[^1].color
+      continue
+    var j = 1
+    while j < g.stops.high and x > g.stops[j].pos: inc j
+    let
+      a = g.stops[j - 1]
+      b = g.stops[j]
+      span = b.pos - a.pos
+    if span <= 0.0:                                   # a hard edge
+      result.add b.color
+      continue
+    let t = (x - a.pos) / span
+    # An unknown endpoint has nothing to convert, and the endpoints themselves
+    # must come back exactly — both are `lerp`'s rules, and deferring to it is
+    # what keeps them in one place rather than restated here.
+    if a.color.kind == ckDefault or b.color.kind == ckDefault or
+       t <= 0.0 or t >= 1.0:
+      result.add lerp(a.color, b.color, t)
+      continue
+    if j != seg:
+      seg = j
+      lo = a.color.toOklab
+      hi = b.color.toOklab
+    result.add fromOklab((lo.l + (hi.l - lo.l) * t,
+                          lo.a + (hi.a - lo.a) * t,
+                          lo.b + (hi.b - lo.b) * t))
 
 proc reversed*(g: Gradient): Gradient =
   ## The same ramp read right to left.

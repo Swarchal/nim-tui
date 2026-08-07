@@ -156,9 +156,13 @@ proc columnWidths*(t: Table, total = 0): seq[int] =
         inc sum
         inc i
 
-proc rule(t: Table, widths: seq[int], left, mid, right: string): string =
+proc rule(t: Table, widths: seq[int], left, mid, right: string,
+          edge = ""): string =
+  ## One horizontal rule. `edge` is the glyph it is drawn with, defaulting to the
+  ## border's `horizontal` — the top and bottom rules pass their own, since a
+  ## half-block frame does not use the same glyph above and below.
   let
-    h = t.borderChars.horizontal
+    h = if edge.len > 0: edge else: t.borderChars.horizontal
     l = if left.len > 0: left else: h
     m = if mid.len > 0: mid else: h
     r = if right.len > 0: right else: h
@@ -175,9 +179,13 @@ proc renderRow(t: Table, widths: seq[int], cells: openArray[string],
   let
     gutter = spaces(t.padding)
     v = t.borderStyle.render(t.borderChars.vertical)
+    vLeft = t.borderStyle.render(t.borderChars.leftEdge)
+    vRight = t.borderStyle.render(t.borderChars.rightEdge)
   var line: Spans
   for i, w in widths:
-    if t.showBorder and i == 0: line.add v
+    # The frame and the column separators are three different glyphs on a border
+    # whose sides differ; on every other border they are the same one.
+    if t.showBorder and i == 0: line.add vLeft
     elif t.showBorder: line.add v
     # The padding carries the cell's own style, so a row background runs
     # unbroken between the separators instead of striping only behind the text.
@@ -186,7 +194,7 @@ proc renderRow(t: Table, widths: seq[int], cells: openArray[string],
     let text = if displayWidth(cells[i]) > w: elide(cells[i], w) else: cells[i]
     line.add(alignVisible(text, w, aligns[i]), st)
     if t.padding > 0: line.add(gutter, st)
-  if t.showBorder: line.add v
+  if t.showBorder: line.add vRight
   line.render()
 
 proc render*(t: Table, width = 0): string =
@@ -203,7 +211,7 @@ proc render*(t: Table, width = 0): string =
   var lines: seq[string]
   if t.showBorder:
     lines.add t.rule(widths, t.borderChars.topLeft, t.borderChars.teeDown,
-                     t.borderChars.topRight)
+                     t.borderChars.topRight, t.borderChars.topEdge)
 
   if t.showHeader:
     var
@@ -237,7 +245,7 @@ proc render*(t: Table, width = 0): string =
 
   if t.showBorder:
     lines.add t.rule(widths, t.borderChars.bottomLeft, t.borderChars.teeUp,
-                     t.borderChars.bottomRight)
+                     t.borderChars.bottomRight, t.borderChars.bottomEdge)
   if width > 0:
     for i in 0 .. lines.high:
       if displayWidth(lines[i]) > width:

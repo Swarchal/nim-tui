@@ -126,11 +126,30 @@ suite "table appearance":
 
   test "every built-in border keeps the geometry":
     for b in [RoundedBorder, SquareBorder, DoubleBorder, ThickBorder,
-              DashedBorder, AsciiBorder, HiddenBorder]:
+              DashedBorder, AsciiBorder, HiddenBorder, BlockBorder,
+              OuterHalfBlockBorder, InnerHalfBlockBorder]:
       var t = sample()
       t.borderChars = b
       for line in t.lines(40):
         check displayWidth(line) == 40
+
+  test "a border with different sides puts each one where it belongs":
+    # The half-block borders have no junction glyphs, so this is also the test
+    # that a table falls back to the edge it is drawing rather than dropping the
+    # rule — and that the left frame, the column separators and the right frame
+    # are three different glyphs rather than one repeated.
+    var t = sample()
+    t.borderChars = OuterHalfBlockBorder
+    var lines: seq[string]
+    for line in t.lines(40): lines.add stripAnsi(line)   # the border is styled
+    check lines[0].startsWith("▛")
+    check lines[0].endsWith("▜")
+    check "▀" in lines[0]
+    check lines[^1].startsWith("▙")
+    check lines[^1].endsWith("▟")
+    check "▄" in lines[^1]
+    for line in lines[1 ..< lines.high]:
+      if line.startsWith("▌"): check line.endsWith("▐")
 
   test "zebra striping does not change any width":
     var t = sample()

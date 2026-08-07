@@ -98,10 +98,73 @@ suite "colour conversion":
     check hsl(-30, 0.5, 0.5) == hsl(330, 0.5, 0.5)
 
 suite "colour arithmetic":
-  test "lerp hits both endpoints":
-    check lerp(hex"#000000", hex"#ffffff", 0.0) == hex"#000000"
-    check lerp(hex"#000000", hex"#ffffff", 1.0) == hex"#ffffff"
-    check lerp(hex"#000000", hex"#ffffff", 0.5) == rgb(128, 128, 128)
+  test "lerp hits both endpoints exactly, in either space":
+    # Exactly, and by returning the endpoint rather than mixing it: a round trip
+    # through Oklab converts in both directions and can land a component one off,
+    # which makes a gradient's first colour not quite the colour it was given.
+    for space in [msOklab, msSrgb]:
+      check lerp(hex"#000000", hex"#ffffff", 0.0, space) == hex"#000000"
+      check lerp(hex"#000000", hex"#ffffff", 1.0, space) == hex"#ffffff"
+      check lerp(hex"#123456", hex"#abcdef", 0.0, space) == hex"#123456"
+      check lerp(hex"#123456", hex"#abcdef", 1.0, space) == hex"#abcdef"
+
+  test "msSrgb still mixes the bytes":
+    # The pin on the old behaviour: this is what every naive implementation
+    # does, it is what this one did before Oklab, and a caller reproducing a
+    # palette built that way needs it to stay exact.
+    check lerp(hex"#000000", hex"#ffffff", 0.5, msSrgb) == rgb(128, 128, 128)
+    check lerp(hex"#0000ff", hex"#ffff00", 0.5, msSrgb) == rgb(128, 128, 128)
+
+  test "the default mix keeps saturation across the middle":
+    # The reason for Oklab. Blue to yellow is the worst case: in sRGB the
+    # shortest line between those corners leaves the saturated part of the space
+    # and the midpoint is a dead grey, which is not a colour anyone would pick
+    # halfway between them.
+    let
+      mid = lerp(hex"#0000ff", hex"#ffff00", 0.5)
+      (_, sat, _) = mid.toHsl
+      (_, flatSat, _) = lerp(hex"#0000ff", hex"#ffff00", 0.5, msSrgb).toHsl
+    check sat > flatSat
+    check flatSat < 0.01                # grey, as the sRGB pin above spells out
+    check sat > 0.2
+
+  test "lightness rises monotonically along a ramp":
+    # True in both spaces, and the cheapest guard against a transposed matrix
+    # coefficient: a wrong one still returns plausible colours, but the ramp
+    # stops being ordered.
+    for space in [msOklab, msSrgb]:
+      var last = -1.0
+      for i in 0 .. 16:
+        let (_, _, l) = lerp(hex"#000000", hex"#ffffff", i.float / 16.0, space).toHsl
+        check l >= last
+        last = l
+
+  test "a lerp is usable in a const":
+    # `color` has no dependencies and emits no escapes so that a palette can be
+    # computed at compile time; Oklab's `pow` and `cbrt` both evaluate in the VM,
+    # and this fails to compile rather than fails a check if that stops holding.
+    const Mid = lerp(hex"#0000ff", hex"#ffff00", 0.5)
+    check Mid.kind == ckRgb
+
+  test "ramp is exactly at, sample for sample":
+    # `ramp` hoists the Oklab conversion of each stop out of the loop, which is
+    # the same arithmetic with the repeated part moved — not a second
+    # implementation. This is what says so, over uneven stops, hard edges, an
+    # unknown endpoint and a single-stop gradient.
+    let cases = [gradient(hex"#0000ff", hex"#ffff00"),
+                 gradient(hex"#00d4ff", hex"#7b2ff7", hex"#ff2e63"),
+                 gradient({0.0: hex"#000000", 0.2: hex"#ff0000",
+                           0.2: hex"#00ff00", 1.0: hex"#ffffff"}),
+                 gradient(Color(), hex"#ff0000"),
+                 gradient(hex"#123456"),
+                 HeatGradient, RainbowGradient]
+    for g in cases:
+      for n in [2, 3, 5, 8, 16, 40, 97]:
+        let r = g.ramp(n)
+        check r.len == n
+        for i in 0 ..< n:
+          checkpoint "n=" & $n & " i=" & $i
+          check r[i] == g.at(i.float / (n - 1).float)
 
   test "lerp clamps t rather than extrapolating":
     check lerp(hex"#000000", hex"#ffffff", -5.0) == hex"#000000"

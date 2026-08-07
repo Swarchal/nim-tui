@@ -84,25 +84,67 @@ suite "layout":
     check centerVisible("ab", 6) == "  ab  "
     check displayWidth(centerVisible("abcdef", 4)) == 4
 
+const
+  RuledBorders = [RoundedBorder, SquareBorder, DoubleBorder, ThickBorder,
+                  DashedBorder, AsciiBorder, HiddenBorder, BlockBorder]
+    ## The borders a table can draw an interior rule through.
+  AllBorders = [RoundedBorder, SquareBorder, DoubleBorder, ThickBorder,
+                DashedBorder, AsciiBorder, HiddenBorder, BlockBorder,
+                OuterHalfBlockBorder, InnerHalfBlockBorder]
+
 suite "borders":
   test "every built-in border renders an exact box":
-    for b in [RoundedBorder, SquareBorder, DoubleBorder, ThickBorder,
-              DashedBorder, AsciiBorder, HiddenBorder]:
+    for b in AllBorders:
       for w in [4, 12, 30]:
         let box = renderBox("body", w, 5, title = "t", border = b)
         check blockHeight(box) == 5
         for line in box.split('\n'):
           check displayWidth(line) == w
 
-  test "the junction pieces are filled in on every built-in":
+  test "the junction pieces are filled in on every ruled built-in":
     # A table draws rules through the frame, and falls back to `horizontal`
     # where a junction is missing — correct for a hand-written border, but the
     # built-ins should not be relying on it.
-    for b in [RoundedBorder, SquareBorder, DoubleBorder, ThickBorder,
-              DashedBorder, AsciiBorder, HiddenBorder]:
+    #
+    # The two half-block borders are the deliberate exception and are not in
+    # this list: there is no glyph for a thin rule meeting a half-block edge, so
+    # the fallback *is* the answer for them rather than an omission.
+    for b in RuledBorders:
       for piece in [b.teeDown, b.teeUp, b.teeRight, b.teeLeft, b.cross]:
         check piece.len > 0
         check displayWidth(piece) == 1
+
+  test "every edge is one column, whichever way it is reached":
+    # A two-column border glyph wraps the frame, which desynchronises every line
+    # below it rather than just that one.
+    for b in AllBorders:
+      for edge in [b.topEdge, b.bottomEdge, b.leftEdge, b.rightEdge]:
+        check displayWidth(edge) == 1
+
+  test "the four edges fall back to horizontal and vertical":
+    # Which is what keeps every border written before those fields existed —
+    # including hand-written ones — drawing all four of its sides.
+    let plain = Border(topLeft: "+", topRight: "+", bottomLeft: "+",
+                       bottomRight: "+", horizontal: "-", vertical: "|")
+    check plain.topEdge == "-"
+    check plain.bottomEdge == "-"
+    check plain.leftEdge == "|"
+    check plain.rightEdge == "|"
+    check renderBox("x", 12, 3, border = plain).split('\n')[0] == "+----------+"
+    for b in RuledBorders:
+      check b.topEdge == b.bottomEdge      # the ruled borders are symmetric
+      check b.leftEdge == b.rightEdge
+
+  test "a half-block border differs on opposite edges":
+    # The reason the four fields exist at all: one `horizontal` and one
+    # `vertical` cannot say `▀` above and `▄` below.
+    for b in [OuterHalfBlockBorder, InnerHalfBlockBorder]:
+      check b.topEdge != b.bottomEdge
+      check b.leftEdge != b.rightEdge
+    let box = renderBox("body", 10, 3, border = OuterHalfBlockBorder).split('\n')
+    check box[0] == "▛▀▀▀▀▀▀▀▀▜"
+    check box[1] == "▌body    ▐"
+    check box[2] == "▙▄▄▄▄▄▄▄▄▟"
 
 suite "panel":
   test "a panel renders the same box as renderBox":

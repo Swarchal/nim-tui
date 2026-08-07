@@ -33,6 +33,10 @@
 ## echo sparkline(cpu, 40, CoolGradient)    # each glyph coloured by its height
 ## ```
 ##
+## A gradient `gauge` fills with `▌` and puts the next point on the ramp behind
+## it, so every cell carries two colours and the bar is twice as smooth as its
+## width — sub-cell resolution again, in colour rather than in shape.
+##
 ## That argument is required rather than defaulted, so the uncoloured calls above
 ## stay unambiguous — a `Gradient` with a default value would make `gauge(0.5, 20)`
 ## match both overloads.
@@ -69,7 +73,7 @@ proc gauge*(fraction: float, width: int, full = "█", empty = "░"): string =
       result.add empty.repeat(width - whole)
 
 proc gauge*(fraction: float, width: int, fill: Gradient, empty = "░",
-            emptyStyle = Style().faint(), full = "█"): string =
+            emptyStyle = Style().faint(), full = "█", halfBlock = true): string =
   ## `gauge` with the filled cells coloured along `fill`.
   ##
   ## The ramp is laid over the *whole* bar, not over the filled part, so a given
@@ -77,21 +81,40 @@ proc gauge*(fraction: float, width: int, fill: Gradient, empty = "░",
   ## the filled part instead would recolour every cell on each update, which
   ## reads as the bar flashing rather than growing — and would make 100% of a
   ## `HeatGradient` look identical to 10% of it.
+  ##
+  ## `halfBlock` draws the filled run as `▌` with the *next* point on the ramp as
+  ## the cell's background, so each cell carries two samples and the bar is twice
+  ## as smooth in the same columns — the sub-cell trick `lineChart` uses for
+  ## shape, applied to colour. It is what `full` is for: with half-block on the
+  ## glyph is `▌` by construction, so a caller wanting a different fill glyph
+  ## passes `halfBlock = false` and gets one colour per cell.
+  ##
+  ## It turns itself off under `cpNoColor`, where `sgr` emits nothing and a row
+  ## of bare `▌` would draw a bar half the width it means. Under `cpAnsi16` the
+  ## two halves often round to the same colour, which costs nothing — that is a
+  ## solid cell, exactly what the colours say.
   if width <= 0: return ""
   let
     f = clamp(fraction, 0.0, 1.0)
     exact = f * width.float
     whole = min(exact.int, width)
     rest = exact - exact.int.float
-    colours = fill.ramp(width)
+    half = halfBlock and colorProfile() != cpNoColor
+    colours = fill.ramp(if half: width * 2 else: width)
   var line: Spans
   for i in 0 ..< whole:
-    line.add(full, Style().fg(colours[i]))
+    line.add(if half: "▌" else: full,
+             if half: Style().fg(colours[2 * i]).bg(colours[2 * i + 1])
+             else: Style().fg(colours[i]))
   var used = whole
   if used < width:
     let eighth = (rest * 8).int
     if eighth > 0:
-      line.add(PartialBlocks[eighth], Style().fg(colours[used]))
+      # Foreground only, even under half-block: a partial block already ends
+      # part way across its cell, and a background would paint the rest of it —
+      # which is the empty part of the bar.
+      line.add(PartialBlocks[eighth],
+               Style().fg(colours[if half: 2 * used else: used]))
       inc used
     if used < width:
       line.add(empty.repeat(width - used), emptyStyle)
@@ -135,8 +158,20 @@ proc sparkline*(values: openArray[float], width: int, colours: Gradient): string
   let (pad, levels) = sparkLevels(values, width)
   var line: Spans
   if pad > 0: line.add spaces(pad)
+  # A glyph's colour depends only on its level, and there are eight of those, so
+  # each is sampled at most once however wide the sparkline is — the same
+  # reasoning `barChart` applies to its columns, and it matters more since Oklab:
+  # `at` is a perceptual mix, not three multiplications. Filled lazily rather
+  # than up front because a sparkline can be narrower than eight cells.
+  #
+  # `ckDefault` is the zero value and is not a colour a ramp samples to unless
+  # one of its stops is one, so it doubles as "not computed yet" and the cache
+  # needs no flags beside it. A gradient that does contain `ckDefault` simply
+  # recomputes that level, which is correct and no slower than before.
+  var sampled: array[8, Color]
   for lv in levels:
-    line.add(SparkChars[lv], Style().fg(colours.at(lv.float / 7.0)))
+    if sampled[lv].kind == ckDefault: sampled[lv] = colours.at(lv.float / 7.0)
+    line.add(SparkChars[lv], Style().fg(sampled[lv]))
   line.render()
 
 proc chartNorms(values: openArray[float], start: int, lo, hi: float,
@@ -344,7 +379,12 @@ proc lineChart*(values: openArray[float], width, height: int, colours: Gradient,
     span = max(rows - 1, 1).float
     masks = lineMasks(values, width, height, lo, hi, glyphs)
   result = newSeqOfCap[string](height)
-  var cell = newStringOfCap(3)
+  var
+    cell = newStringOfCap(3)
+    # One sample per *height*, not per cell: a chart has `rows` of those and up
+    # to `width * height` cells. Lazy, and `ckDefault` as the "not computed"
+    # sentinel, for the reasons spelled out on `sparkline` above.
+    sampled = newSeq[Color](rows)
   for row in 0 ..< height:
     var line: Spans
     for col in 0 ..< width:
@@ -355,9 +395,11 @@ proc lineChart*(values: openArray[float], width, height: int, colours: Gradient,
       var bit = 0
       while (mask and (1 shl bit)) == 0: inc bit
       let y = row * dy + bit div dx
+      if sampled[y].kind == ckDefault:
+        sampled[y] = colours.at((rows - 1 - y).float / span)
       cell.setLen 0
       cell.addGlyph(glyphs, mask)
-      line.add(cell, Style().fg(colours.at((rows - 1 - y).float / span)))
+      line.add(cell, Style().fg(sampled[y]))
     result.add line.render()
 
 proc lineSpark*(values: openArray[float], width: int, lo = 0.0, hi = 0.0,
