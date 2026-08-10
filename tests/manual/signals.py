@@ -37,6 +37,7 @@ EXIT_ALT = b"\x1b[?1049l"
 DISABLE_MOUSE = b"\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l"
 DISABLE_PASTE = b"\x1b[?2004l"
 DISABLE_FOCUS = b"\x1b[?1004l"
+ENABLE_WRAP = b"\x1b[?7h"
 RESET = b"\x1b[0m"
 
 failures = []
@@ -181,6 +182,12 @@ def case(name, sig, modes, expect):
         check(seq in tail, "  " + label)
     check(tail.startswith(END_SYNC),
           "  synchronised output is ended first")
+
+    # Not in any `expect` list because no option turns it on: the library
+    # disables auto-wrap for every program, so every teardown must put it back.
+    # A shell that inherits a terminal with DECAWM off is nearly as broken as one
+    # that inherits it without ECHO, and nothing else here would notice.
+    check(ENABLE_WRAP in tail, "  auto-wrap is turned back on")
 
     # The one that matters: everything else can be right and the shell still
     # unusable without `reset`.

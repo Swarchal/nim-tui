@@ -43,6 +43,8 @@
 ## Building a view out of blocks of text, independent of the runtime:
 ##
 ## * `nimtui/spans` — one line carrying several styles
+## * `nimtui/boxdraw` — box-drawing glyphs as an algebra, for borders and grids
+## * `nimtui/digits` — numerals three rows tall
 ## * `nimtui/layout` — padding, joining, wrapping, bordered panels, overlays
 ## * `nimtui/widgets` — bars, charts, spinners, tabs, status bars, key hints
 ## * `nimtui/table` — columns that line up
@@ -57,8 +59,8 @@
 ## * `nimtui/termsize` — the terminal's size, and the resize branch as one line
 
 import nimtui/[ansi, color, messages, input, style, renderer, tty, query, program,
-               spans, layout, widgets, table, theme,
+               spans, boxdraw, digits, layout, widgets, table, theme,
                viewport, listview, textarea, textinput, termsize]
 export ansi, color, messages, input, style, renderer, tty, query, program
-export spans, layout, widgets, table, theme
+export spans, boxdraw, digits, layout, widgets, table, theme
 export viewport, listview, textarea, textinput, termsize

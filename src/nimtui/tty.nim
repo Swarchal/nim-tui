@@ -38,6 +38,12 @@ type
     ## bools that all mean "was this on" is a transposition waiting to happen,
     ## and transposing two of them writes a plausible-looking wrong sequence.
     tmAltScreen
+    tmLineWrap
+      ## Auto-wrap turned *off* — the mode is named for what was changed, like
+      ## the others, not for the state it was put into. Unlike the others it is
+      ## not something an application asks for: the renderer's arithmetic assumes
+      ## no wrapping, so keeping the terminal from wrapping is the library's own
+      ## business and `program` sets it unconditionally.
     tmHideCursor
     tmMouse
     tmBracketedPaste
@@ -304,6 +310,10 @@ proc restoreEscapesFor*(modes: set[TerminalMode]): string =
   if tmBracketedPaste in modes: result.add DisableBracketedPaste
   if tmMouse in modes: result.add DisableMouse
   if tmHideCursor in modes: result.add ShowCursor
+  # Before leaving the alt screen, since that is the order `setupTerminal` set
+  # them in reversed: auto-wrap is turned off once the program owns the screen,
+  # so it goes back on while the program still does.
+  if tmLineWrap in modes: result.add EnableLineWrap
   if tmAltScreen in modes: result.add ExitAltScreen
 
 proc restoreModes*(t: Tty, modes: set[TerminalMode]) =
@@ -379,3 +389,6 @@ proc disableBracketedPaste*(t: Tty) = t.write DisableBracketedPaste
 
 proc enableFocusReporting*(t: Tty) = t.write EnableFocusReporting
 proc disableFocusReporting*(t: Tty) = t.write DisableFocusReporting
+
+proc disableLineWrap*(t: Tty) = t.write DisableLineWrap
+proc enableLineWrap*(t: Tty) = t.write EnableLineWrap

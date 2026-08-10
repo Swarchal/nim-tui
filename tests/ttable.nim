@@ -255,3 +255,45 @@ suite "a cell that is not one line":
     check narrow.columnWidths() == @[3]
     for line in narrow.render().split('\n'):
       check displayWidth(line) == narrow.totalWidth
+
+suite "a frame heavier than what it divides":
+  ## `ruledBorder(frame, rules)` is the only way to get a border whose interior
+  ## rules are a different weight from its frame, and a table is the only place
+  ## those rules are drawn — so this is where the sixteen weight pairings have to
+  ## be exercised, not in `tlayout.nim` where there is no interior to rule.
+
+  test "every pairing renders a table exactly as wide as asked":
+    for frame in LineWeight:
+      for rules in LineWeight:
+        checkpoint $frame & " frame, " & $rules & " rules"
+        var t = sample()
+        t.borderChars = ruledBorder(frame, rules)
+        for total in [20, 44, 80]:
+          for line in t.lines(total):
+            check displayWidth(line) == total
+
+  test "the separators are the rule weight and the frame is not":
+    # The point of the whole exercise. Drawn by hand this is where it goes
+    # wrong: the column separator and the left edge are different glyphs on a
+    # mixed border and the same glyph on every other one, so a call site that
+    # reaches for `vertical` looks correct until someone builds one of these.
+    var t = sample()
+    t.borderChars = ruledBorder(lwDouble, lwThin)
+    t.borderStyle = Style()
+    let rows = t.lines()
+    for line in rows[1 .. ^2]:
+      if "║" in line:
+        check "│" in line          # a body row: frame outside, rule inside
+    check rows[0].startsWith("╔")
+    check "╤" in rows[0]           # the top edge meeting a thin separator
+    check "╟" in rows[2] and "┼" in rows[2]   # the header rule crossing it
+    check rows[^1].startsWith("╚") and "╧" in rows[^1]
+
+  test "a uniform pairing is indistinguishable from the built-in":
+    # `innerHorizontal` and `innerVertical` are left empty when the weights
+    # match, so the accessors fall back and nothing about the output moves.
+    var built = sample()
+    built.borderChars = ruledBorder(lwDouble)
+    var plain = sample()
+    plain.borderChars = DoubleBorder
+    check built.render(60) == plain.render(60)

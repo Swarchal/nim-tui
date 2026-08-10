@@ -49,6 +49,104 @@ suite "widgets":
     check rows[0][0 ..< 3] != "  "        # top row filled for the 100 column
     check rows[0].endsWith(" ")           # but not for the 10 column
 
+suite "a bar whose sub-cell resolution is in the glyph":
+  ## The point of `thinBar` against a gradient `gauge`: half a cell said with
+  ## `╸` rather than with a second colour, so nothing about it depends on the
+  ## profile. Every assertion here would still pass under `cpNoColor`, which is
+  ## the claim.
+
+  test "it is exactly as wide as it was asked for":
+    for w in [1, 2, 5, 20, 41]:
+      for f in [0.0, 0.01, 0.024, 0.25, 0.5, 0.73, 0.999, 1.0]:
+        checkpoint "w=" & $w & " f=" & $f
+        check displayWidth(thinBar(f, w)) == w
+        check displayWidth(thinBar(f, w, HeatGradient)) == w
+
+  test "the ends are the ends":
+    check thinBar(0.0, 6) == "──────"
+    check thinBar(1.0, 6) == "━━━━━━"
+    # Clamped, not wrapped: a fraction outside 0..1 is a caller's arithmetic
+    # going wrong, and a bar that came back empty for 1.2 would hide it.
+    check thinBar(-0.5, 6) == thinBar(0.0, 6)
+    check thinBar(1.5, 6) == thinBar(1.0, 6)
+
+  test "a half cell is drawn as a half cell":
+    # Two and a half cells of ten, which whole-cell rounding would draw as two
+    # or as three. This is the resolution the widget exists for.
+    check thinBar(0.25, 10) == "━━╸───────"
+    check thinBar(0.2, 10) == "━━────────"
+    check thinBar(0.3, 10) == "━━━───────"
+
+  test "the last cell can be a half, and never overruns":
+    # `halves` caps at `width * 2`, so an odd count always leaves a whole cell
+    # for the half to sit in — the one place this could write width + 1 columns.
+    for w in [1, 2, 3, 7]:
+      for h in 0 .. w * 2:
+        let bar = thinBar(h.float / float(w * 2), w)
+        checkpoint "w=" & $w & " halves=" & $h
+        check displayWidth(bar) == w
+        check bar.count("╸") <= 1
+
+  test "it says the same thing with the colour taken away":
+    # A gradient `gauge` has to fall back to half the resolution here; this does
+    # not, because the sub-cell information was never in the colour.
+    #
+    # `stripAnsi` rather than the bytes, and the difference is the point: the
+    # track keeps its `faint`, since `cpNoColor` suppresses colour and not
+    # attributes. What has to be identical is the *glyphs*, which is where this
+    # widget keeps the half cell.
+    let saved = colorProfile()
+    setColorProfile(cpNoColor)
+    check stripAnsi(thinBar(0.25, 10, HeatGradient)) == "━━╸───────"
+    check stripAnsi(thinBar(0.25, 10, HeatGradient)) == thinBar(0.25, 10)
+    check displayWidth(thinBar(0.25, 10, HeatGradient)) == 10
+    setColorProfile(saved)
+
+  test "the gradient overload colours the fill and not the track":
+    let bar = thinBar(0.5, 10, gradient(hex"#ff0000", hex"#00ff00"))
+    check "38;2;255;0;0" in bar        # the first cell is the first stop
+    check stripAnsi(bar) == "━━━━━─────"
+
+suite "a spinner that moves in colour":
+  test "it is exactly `cells` columns, at every phase":
+    for cells in [1, 3, 5, 9]:
+      for i in 0 .. 12:
+        checkpoint "cells=" & $cells & " i=" & $i
+        check displayWidth(pulse(HeatGradient, i.float / 12.0, cells)) == cells
+
+  test "the phase wraps, so a clock can be handed straight in":
+    # `epochTime() * rate` is the intended argument and grows without bound.
+    check pulse(HeatGradient, 0.25, 5) == pulse(HeatGradient, 7.25, 5)
+    check pulse(HeatGradient, 0.25, 5) == pulse(HeatGradient, -0.75, 5)
+
+  test "the dots are staggered rather than all the same colour":
+    # Which is the whole widget: five identical glyphs, and the only thing
+    # distinguishing them is where each is in the cycle.
+    let row = pulse(HeatGradient, 0.4, 5)
+    var seen: seq[string]
+    for part in row.split("●"):
+      if part.len > 0 and part notin seen: seen.add part
+    check seen.len > 5                 # an on and an off escape per distinct dot
+
+  test "advancing the phase changes the picture":
+    var pictures: seq[string]
+    for i in 0 .. 7:
+      let p = pulse(HeatGradient, i.float / 8.0, 5)
+      if p notin pictures: pictures.add p
+    check pictures.len == 8
+
+  test "with no colour it falls back to the glyph spinner, same width":
+    # A row of identical uncoloured dots does not move at all, which is worse
+    # than a plainer spinner. Changing width with the profile would be worse
+    # still — whatever is laid out beside it would shift.
+    let saved = colorProfile()
+    setColorProfile(cpNoColor)
+    for cells in [1, 5, 9]:
+      check displayWidth(pulse(HeatGradient, 0.3, cells)) == cells
+    check pulse(HeatGradient, 0.0, 5).startsWith(SpinnerFrames[0])
+    check pulse(HeatGradient, 0.0, 5) != pulse(HeatGradient, 0.5, 5)
+    setColorProfile(saved)
+
 suite "line charts":
   ## A trace rather than columns, so the assertions that matter are the width one
   ## (a braille or quadrant glyph measured as two columns wraps the frame) and

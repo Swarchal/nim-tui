@@ -323,6 +323,83 @@ suite "viewport":
     check top[0] == "┃"
     check bottom[^1] == "┃"
 
+suite "scrollbar in eighths":
+  ## The dimensional assertion first, since a gutter one column wider than it
+  ## claims wraps the row it is appended to, and the rest of the frame with it.
+
+  test "every cell is exactly one column, at every position and every scale":
+    for total in [11, 12, 25, 40, 200, 5000]:
+      for top in 0 .. total - 10:
+        for cell in Viewport(top: top, height: 10).smoothScrollbar(total):
+          checkpoint "total " & $total & " top " & $top & " cell " & escape(cell)
+          check displayWidth(cell) == 1
+
+  test "one cell per visible row, and none at all for no rows":
+    check Viewport(top: 0, height: 10).smoothScrollbar(100).len == 10
+    check Viewport(top: 0, height: 0).smoothScrollbar(100).len == 0
+
+  test "everything fitting is all track and no thumb":
+    let bar = Viewport(top: 0, height: 10).smoothScrollbar(10, Style())
+    check bar == newSeqWith(10, " ")
+
+  test "the ends are flush, which is what says there is no more to scroll":
+    # The two positions a reader checks against the content rather than against
+    # the thumb, so an off-by-an-eighth here reads as "there is a little more".
+    let atTop = Viewport(top: 0, height: 10).smoothScrollbar(25, Style())
+    let atBottom = Viewport(top: 15, height: 10).smoothScrollbar(25, Style())
+    check atTop[0] == "█"
+    check atTop[^1] == " "
+    check atBottom[^1] == "█"
+    check atBottom[0] == " "
+
+  test "the thumb moves in eighths where the whole-cell one does not move":
+    # The point of the exercise. Ten rows over a thousand lines: the whole-cell
+    # thumb has one picture for the first ninety positions and this has several,
+    # which is the difference between a scrollbar that responds to a keypress and
+    # one that appears stuck.
+    proc pictures(smooth: bool): int =
+      var seen: seq[string]
+      for top in 0 .. 90:
+        let v = Viewport(top: top, height: 10)
+        let s = (if smooth: v.smoothScrollbar(1000, Style())
+                 else: v.scrollbar(1000)).join("")
+        if s notin seen: seen.add s
+      seen.len
+    check pictures(smooth = false) == 1
+    check pictures(smooth = true) > 5
+
+  test "the lower end is reversed, since Unicode has no top-filled blocks":
+    # Not a style preference: `▁`..`▇` fill from the bottom and there is no
+    # matching set filled from the top, so the bottom of the thumb can only be
+    # drawn by swapping foreground and background. Dropping the reverse leaves a
+    # thumb with a gap under it and a stripe below the gap.
+    let bar = Viewport(top: 1, height: 10).smoothScrollbar(25, Style())
+    let ends = bar.filterIt(Style().reverse().sgr() in it)
+    check ends.len == 1
+
+  test "a partial cell keeps the track's background under the thumb's colour":
+    let bar = Viewport(top: 1, height: 10).smoothScrollbar(
+      25, Style().fg(hex"#ff0000"), Style().bg(hex"#0000ff"))
+    let partial = bar.filterIt("▅" in it or "▂" in it)
+    check partial.len > 0
+    for cell in partial:
+      # The parameters rather than the whole escape: `sgr` coalesces a
+      # foreground and a background into one sequence, so the two colours are in
+      # there together or not at all.
+      checkpoint escape(cell)
+      check "38;2;255;0;0" in cell
+      check "48;2;0;0;255" in cell
+
+  test "withScrollbar is smooth by default and can be asked not to be":
+    let v = Viewport(top: 0, height: 3)
+    let smooth = v.withScrollbar(@["a", "b", "c"], 30)
+    let whole = v.withScrollbar(@["a", "b", "c"], 30, smooth = false)
+    check "█" in smooth[0]
+    check "┃" in whole[0]
+    # Whichever it is, the row grew by exactly one column.
+    for row in smooth & whole:
+      check displayWidth(row) == 2
+
 suite "term size":
   ## The bool is the `handleKey` contract applied to a resize, and the value of
   ## the whole thing is that it means the same as everywhere else in the library.

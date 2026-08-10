@@ -53,6 +53,14 @@ const
   EnableFocusReporting* = Csi & "?1004h"
   DisableFocusReporting* = Csi & "?1004l"
 
+  ## Auto-wrap (DECAWM, mode 7). With it *off*, a glyph written past the right
+  ## margin is dropped instead of continuing on the next row — which is the one
+  ## thing that stops a single mis-measured line from dragging every row below it
+  ## out of step. Every other invariant in this library is about never emitting
+  ## such a line; this is what happens when one gets through anyway.
+  EnableLineWrap* = Csi & "?7h"
+  DisableLineWrap* = Csi & "?7l"
+
 proc cursorUp*(n: int): string =
   if n <= 0: "" else: Csi & $n & "A"
 

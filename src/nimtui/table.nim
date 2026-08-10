@@ -159,10 +159,11 @@ proc columnWidths*(t: Table, total = 0): seq[int] =
 proc rule(t: Table, widths: seq[int], left, mid, right: string,
           edge = ""): string =
   ## One horizontal rule. `edge` is the glyph it is drawn with, defaulting to the
-  ## border's `horizontal` — the top and bottom rules pass their own, since a
-  ## half-block frame does not use the same glyph above and below.
+  ## border's interior rule — the top and bottom rules pass their own, since a
+  ## half-block frame does not use the same glyph above and below, and what is
+  ## left defaulting is the header rule, which is interior by definition.
   let
-    h = if edge.len > 0: edge else: t.borderChars.horizontal
+    h = if edge.len > 0: edge else: t.borderChars.innerHorizontalEdge
     l = if left.len > 0: left else: h
     m = if mid.len > 0: mid else: h
     r = if right.len > 0: right else: h
@@ -178,7 +179,11 @@ proc renderRow(t: Table, widths: seq[int], cells: openArray[string],
                rowStyle: Style): string =
   let
     gutter = spaces(t.padding)
-    v = t.borderStyle.render(t.borderChars.vertical)
+    # The column separators are interior rules, not frame; `leftEdge` and
+    # `rightEdge` below are the frame. On every border where the two are the same
+    # glyph this is the distinction that costs nothing and reads as pedantry —
+    # `ruledBorder(lwDouble, lwThin)` is the one where it is the whole point.
+    v = t.borderStyle.render(t.borderChars.innerVerticalEdge)
     vLeft = t.borderStyle.render(t.borderChars.leftEdge)
     vRight = t.borderStyle.render(t.borderChars.rightEdge)
   var line: Spans

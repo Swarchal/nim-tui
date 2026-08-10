@@ -31,13 +31,15 @@
 ## price of blocks being ordinary strings; it is a few tens of microseconds for a
 ## screenful, well inside a frame.
 
-import std/[strutils, algorithm]
-import ./[ansi, style, spans]
+import std/[strutils, algorithm, math]
+import ./[ansi, style, spans, boxdraw]
 # `renderBox` takes `Style` values, so a caller importing only this module still
 # needs them — re-exported for the same reason `ansi` re-exports `width`.
 # `spans` comes with it for `Align` and `VAlign`, and because a styled line is
-# the natural thing to hand to a block helper.
-export style, spans
+# the natural thing to hand to a block helper. `boxdraw` comes with `Border` for
+# the same reason: `ruledBorder` takes a `LineWeight`, so a caller that never
+# names the module still has to be able to name the enum.
+export style, spans, boxdraw
 
 type
   Border* = object
@@ -58,9 +60,16 @@ type
     ## that only sets `horizontal` and `vertical` still draws all four sides.
     ## Read them through `topEdge <#topEdge,Border>`_ and its three neighbours
     ## rather than directly, which is where that fallback lives.
+    ## The last two are the *interior* rules — the header rule and the column
+    ## separators of a `nimtui/table <table.html>`_ — which need not be the frame's
+    ## own glyphs. They exist so a frame can be heavier than what it divides,
+    ## which is what the junctions above were already able to express and nothing
+    ## could ask for. Empty falls back to `horizontal` / `vertical`, so a border
+    ## that sets neither draws exactly as it did before they existed.
     topLeft*, topRight*, bottomLeft*, bottomRight*, horizontal*, vertical*: string
     teeDown*, teeUp*, teeRight*, teeLeft*, cross*: string
     top*, bottom*, left*, right*: string
+    innerHorizontal*, innerVertical*: string
 
 const
   RoundedBorder* = Border(topLeft: "╭", topRight: "╮", bottomLeft: "╰",
@@ -115,6 +124,55 @@ const
                                  vertical: "▐", bottom: "▀", right: "▌")
     ## The same frame turned inward, so the ink faces the content and the panel
     ## reads as punched out of the background rather than laid on top of it.
+  EvenBlockBorder* = Border(topLeft: "▄", topRight: "▄", bottomLeft: "▀",
+                            bottomRight: "▀", horizontal: "▄", vertical: "█",
+                            bottom: "▀")
+    ## `BlockBorder` with the top and bottom trimmed to half a cell.
+    ##
+    ## A terminal cell is about twice as tall as it is wide, so a solid frame one
+    ## cell thick is *twice* as heavy along the top and bottom as it is up the
+    ## sides. Half a cell above and below against a full cell either side is the
+    ## one block frame that reads as the same thickness the whole way round,
+    ## which is why it is worth having beside `BlockBorder` rather than instead
+    ## of it — the heavier one is a deliberate look, this one is the neutral one.
+    ##
+    ## The halves face *inward*, like `InnerHalfBlockBorder`, so the frame closes
+    ## on the content rather than leaving a gap between the corner and the edge.
+  HairlineHorizontalBorder* = Border(topLeft: "▔", topRight: "▔",
+                                     bottomLeft: "▁", bottomRight: "▁",
+                                     horizontal: "▔", vertical: " ",
+                                     bottom: "▁")
+    ## A rule above and below and nothing at the sides: a full cell of layout for
+    ## an eighth of a cell of ink.
+    ##
+    ## That combination is the point of it. `HiddenBorder` is the only other way
+    ## to de-emphasise a pane without moving it, and it goes all the way to
+    ## drawing nothing — so a pane that should read as *present but quiet* has
+    ## had no spelling until now. The two hairlines also stack: a column of
+    ## panes bordered this way reads as a ruled list rather than as a stack of
+    ## boxes.
+  HairlineVerticalBorder* = Border(topLeft: "▏", topRight: "▕",
+                                   bottomLeft: "▏", bottomRight: "▕",
+                                   horizontal: " ", vertical: "▏", right: "▕")
+    ## `HairlineHorizontalBorder` turned ninety degrees: a rule up each side and
+    ## nothing above or below, so a row of panes is divided without being boxed.
+    ##
+    ## The two sides are different glyphs — `▏` is the leftmost eighth of its
+    ## cell and `▕` the rightmost — so each rule sits against the content rather
+    ## than against the gap outside it, which is the same reasoning the
+    ## half-block borders' `bottom` and `right` fields exist for.
+  HeavyDashedBorder* = Border(topLeft: "┏", topRight: "┓", bottomLeft: "┗",
+                              bottomRight: "┛", horizontal: "╍", vertical: "╏",
+                              teeDown: "┳", teeUp: "┻", teeRight: "┣",
+                              teeLeft: "┫", cross: "╋")
+    ## `DashedBorder`'s weight raised to match `ThickBorder`, which is the pair
+    ## `DashedBorder` and `SquareBorder` already make at the light weight — a
+    ## dashed frame that can sit beside a solid heavy one and read as the same
+    ## border in a different state.
+    ##
+    ## The corners and junctions are solid heavy glyphs, since the dashed set has
+    ## none of its own: a dash is a property of a *run*, and a junction is a
+    ## single cell where four runs meet.
 
 proc topEdge*(b: Border): string =
   ## The glyph for the top edge, falling back to `horizontal`.
@@ -131,6 +189,67 @@ proc leftEdge*(b: Border): string =
 proc rightEdge*(b: Border): string =
   ## The glyph for the right edge, falling back to `vertical`.
   if b.right.len > 0: b.right else: b.vertical
+
+proc innerHorizontalEdge*(b: Border): string =
+  ## The glyph for an interior horizontal rule, falling back to `horizontal`.
+  if b.innerHorizontal.len > 0: b.innerHorizontal else: b.horizontal
+
+proc innerVerticalEdge*(b: Border): string =
+  ## The glyph for an interior vertical rule, falling back to `vertical`.
+  if b.innerVertical.len > 0: b.innerVertical else: b.vertical
+
+proc ruledBorder*(frame: LineWeight, rules = frame, rounded = false): Border =
+  ## A `Border` built from the box-drawing table: a frame at `frame`, interior
+  ## rules at `rules`, and every corner and junction the glyph where those two
+  ## meet.
+  ##
+  ## ```nim
+  ## echo Panel(border: ruledBorder(lwDouble, lwThin)).render(...)
+  ## ```
+  ##
+  ## This is the only way to get a border whose rules are a different weight
+  ## from its frame, because that is eleven glyphs and five of them are the
+  ## mixed-weight junctions nobody remembers — `╤`, `╧`, `╟`, `╢`, `╪` for a
+  ## double frame over thin rules, and a different five the other way round.
+  ## Written out by hand it is exactly the kind of table that is wrong in one
+  ## cell.
+  ##
+  ## `SquareBorder`, `ThickBorder`, `DoubleBorder` and `RoundedBorder` are what
+  ## this returns for the three uniform weights, and `tlayout.nim` asserts that
+  ## rather than leaving it as a claim. They stay written out because a table of
+  ## glyphs is the clearest thing to read when the question is what a border
+  ## looks like.
+  ##
+  ## `rounded` swaps in the arc corners, which exist only in the light set — the
+  ## flag does nothing at the other weights, the same way `boxChar
+  ## <boxdraw.html#boxChar,Quad>`_ degrades rather than refusing. `innerHorizontal`
+  ## and `innerVertical` are left empty when `rules == frame`, so the fallback in
+  ## the accessors above produces the same glyph and the result compares equal to
+  ## the hand-written border.
+  result = Border(
+    topLeft: boxChar(right = frame, bottom = frame),
+    topRight: boxChar(bottom = frame, left = frame),
+    bottomLeft: boxChar(top = frame, right = frame),
+    bottomRight: boxChar(top = frame, left = frame),
+    horizontal: boxChar(right = frame, left = frame),
+    vertical: boxChar(top = frame, bottom = frame),
+    # A tee is three frame arms and one rule arm — the rule arriving at the
+    # edge — and the cross is four rule arms, since both lines crossing in the
+    # interior are rules. Getting the frame and the rule the wrong way round
+    # here draws a frame that changes weight at every junction.
+    teeDown: boxChar(right = frame, bottom = rules, left = frame),
+    teeUp: boxChar(top = rules, right = frame, left = frame),
+    teeRight: boxChar(top = frame, right = rules, bottom = frame),
+    teeLeft: boxChar(top = frame, bottom = frame, left = rules),
+    cross: boxChar(rules, rules, rules, rules))
+  if rules != frame:
+    result.innerHorizontal = boxChar(right = rules, left = rules)
+    result.innerVertical = boxChar(top = rules, bottom = rules)
+  if rounded and frame == lwThin:
+    result.topLeft = "╭"
+    result.topRight = "╮"
+    result.bottomLeft = "╰"
+    result.bottomRight = "╯"
 
 proc blockWidth*(s: string): int =
   ## Visible width of the widest line.
@@ -385,6 +504,80 @@ proc fillBlock*(s: string, style: Style, width = -1, height = -1): string =
   if style.isEmpty: return lines.join("\n")
   var rows = newSeqOfCap[string](lines.len)
   for line in lines: rows.add style.renderOver(line)
+  rows.join("\n")
+
+proc gradientFill*(colours: Gradient, width, height: int, angle = 0.0,
+                   halfBlock = true): string =
+  ## A rectangle of colour with no text in it, ramping along `angle`.
+  ##
+  ## What `fillBlock` is to a single `Style`, this is to a `Gradient
+  ## <color.html#Gradient>`_ — a backdrop to `overlay <#overlay,string,string,int,int>`_
+  ## a dialog onto, or a title card. `angle` is in degrees, measured clockwise
+  ## from left-to-right, so 0 ramps across, 90 ramps down and 45 ramps into the
+  ## bottom-right corner.
+  ##
+  ## `halfBlock` draws each cell as `▀` with the *upper* half's colour in the
+  ## foreground and the lower half's behind it, so the block carries two vertical
+  ## samples per row and is twice as smooth as it is tall. This is `gauge`'s
+  ## sub-cell trick turned through ninety degrees, and it matters more here: a
+  ## backdrop is the one thing large enough for the banding between rows to be
+  ## visible as banding rather than as texture.
+  ##
+  ## The angle is computed in *cell-width* units, with a cell counted as two of
+  ## them tall, because a terminal cell is about twice as tall as it is wide. A
+  ## 45° ramp drawn on the raw grid comes out at about 63°, which is the sort of
+  ## wrongness nobody can name on sight and everybody can see.
+  ##
+  ## Under `cpNoColor` this is a rectangle of spaces. Every other widget here
+  ## degrades to something; a gradient has nothing left when the colour is gone,
+  ## and drawing a field of bare `▀` would be a picture of the trick rather than
+  ## of the gradient.
+  if width <= 0 or height <= 0: return ""
+  if colorProfile() == cpNoColor: return padBlock("", width, height)
+  let
+    half = halfBlock
+    rad = angle * PI / 180.0
+    dx = cos(rad)
+    dy = sin(rad)
+    # Sub-rows are half a cell tall under `halfBlock` and a whole cell otherwise,
+    # but the *geometry* is the same either way: the block is `height * 2` units
+    # tall whichever it is, and only the sampling changes.
+    units = float(height * 2)
+    span = abs(dx) * float(width) + abs(dy) * units
+    lo = min(0.0, dx * float(width)) + min(0.0, dy * units)
+    # One ramp sample per unit of projected extent — any finer and two samples
+    # land in the same cell. `at` is a perceptual mix rather than three
+    # multiplications, so the difference between this and sampling per cell is
+    # the difference `sparkline` and `lineChart` already had to learn.
+    quality = clamp(int(ceil(span)) + 1, 2, 1024)
+    ramp = colours.ramp(quality)
+    scale = float(quality - 1)
+  var rows = newSeqOfCap[string](height)
+  for row in 0 ..< height:
+    let yTop = float(row * 2) + (if half: 0.5 else: 1.0)
+    var
+      line: Spans
+      # The per-column step is `dx` and nothing else, so each row is a walk
+      # rather than a projection per cell.
+      pTop = dx * 0.5 + dy * yTop
+      pBottom = pTop + dy      # the lower half-cell, one unit below
+    for _ in 0 ..< width:
+      let
+        iTop = clamp(int((pTop - lo) / max(span, 1e-9) * scale + 0.5), 0, quality - 1)
+        iBottom = clamp(int((pBottom - lo) / max(span, 1e-9) * scale + 0.5), 0,
+                        quality - 1)
+      # A cell whose two halves sample the same colour is a space with a
+      # background, not a `▀` with the same colour twice: identical on screen,
+      # half the bytes, and the whole cell for the renderer to compare. It is
+      # every cell of a horizontal ramp and most of a shallow one, so this is
+      # the common case rather than a corner of it.
+      if half and iTop != iBottom:
+        line.add("▀", Style().fg(ramp[iTop]).bg(ramp[iBottom]))
+      else:
+        line.add(" ", Style().bg(ramp[iTop]))
+      pTop += dx
+      pBottom += dx
+    rows.add line.render()
   rows.join("\n")
 
 proc shadow*(s: string, style = Style().faint(), glyph = "░"): string =

@@ -86,11 +86,19 @@ suite "layout":
 
 const
   RuledBorders = [RoundedBorder, SquareBorder, DoubleBorder, ThickBorder,
-                  DashedBorder, AsciiBorder, HiddenBorder, BlockBorder]
+                  DashedBorder, HeavyDashedBorder, AsciiBorder, HiddenBorder,
+                  BlockBorder]
     ## The borders a table can draw an interior rule through.
+    ##
+    ## Adding a border means deciding which of these two lists it is in, which
+    ## is the decision worth making explicitly: the four that are only in
+    ## `AllBorders` have no junction glyphs, and for them a table falling back
+    ## to the edge is the answer rather than an omission.
   AllBorders = [RoundedBorder, SquareBorder, DoubleBorder, ThickBorder,
-                DashedBorder, AsciiBorder, HiddenBorder, BlockBorder,
-                OuterHalfBlockBorder, InnerHalfBlockBorder]
+                DashedBorder, HeavyDashedBorder, AsciiBorder, HiddenBorder,
+                BlockBorder, EvenBlockBorder, OuterHalfBlockBorder,
+                InnerHalfBlockBorder, HairlineHorizontalBorder,
+                HairlineVerticalBorder]
 
 suite "borders":
   test "every built-in border renders an exact box":
@@ -134,6 +142,181 @@ suite "borders":
     for b in RuledBorders:
       check b.topEdge == b.bottomEdge      # the ruled borders are symmetric
       check b.leftEdge == b.rightEdge
+
+  test "the interior rules fall back the same way, for the same reason":
+    let plain = Border(topLeft: "+", topRight: "+", bottomLeft: "+",
+                       bottomRight: "+", horizontal: "-", vertical: "|")
+    check plain.innerHorizontalEdge == "-"
+    check plain.innerVerticalEdge == "|"
+    for b in AllBorders:
+      checkpoint b.horizontal & b.vertical
+      check b.innerHorizontalEdge == b.topEdge or b.innerHorizontal.len > 0
+      check displayWidth(b.innerHorizontalEdge) == 1
+      check displayWidth(b.innerVerticalEdge) == 1
+
+suite "a border that is not the same on all four sides":
+  ## The three asymmetric additions. What is easy to get wrong about each is not
+  ## the glyph but which *field* it is in, and a frame drawn with its top on the
+  ## bottom is exactly as wide as the right one.
+
+  test "the hairlines take a whole cell and ink an eighth of it":
+    # Which is the reason they exist: `HiddenBorder` is the only other way to
+    # de-emphasise a pane without moving it, and it goes all the way to nothing.
+    let h = renderBox("body", 10, 3, border = HairlineHorizontalBorder)
+                .split('\n')
+    check h[0] == "▔▔▔▔▔▔▔▔▔▔"
+    check h[2] == "▁▁▁▁▁▁▁▁▁▁"
+    check h[1] == " body     "         # no sides at all, but the columns are his
+    let v = renderBox("body", 10, 3, border = HairlineVerticalBorder).split('\n')
+    check v[0] == "▏        ▕"
+    check v[1] == "▏body    ▕"
+    check v[2] == "▏        ▕"
+
+  test "each hairline sits against the content, not against the gap":
+    # `▏` is the leftmost eighth of its cell and `▕` the rightmost, so the two
+    # sides are different glyphs — swapping them puts both rules on the outside
+    # of the frame, which reads as a gap twice as wide as it is.
+    check HairlineVerticalBorder.leftEdge == "▏"
+    check HairlineVerticalBorder.rightEdge == "▕"
+    check HairlineHorizontalBorder.topEdge == "▔"
+    check HairlineHorizontalBorder.bottomEdge == "▁"
+
+  test "the even block frame is half a cell above and a whole cell beside":
+    # A cell is about twice as tall as it is wide, so this is the block border
+    # that reads as one thickness all round; `BlockBorder` is twice as heavy
+    # along the top as it is up the sides.
+    let e = renderBox("body", 8, 3, border = EvenBlockBorder).split('\n')
+    check e[0] == "▄▄▄▄▄▄▄▄"
+    check e[1] == "█body  █"
+    check e[2] == "▀▀▀▀▀▀▀▀"
+    # Inward-facing, like `InnerHalfBlockBorder`: the halves close on the
+    # content. Turned the other way the frame would be open at both corners.
+    check EvenBlockBorder.topEdge == "▄"
+    check EvenBlockBorder.bottomEdge == "▀"
+
+  test "the heavy dashed frame is dashed only along its runs":
+    # A dash is a property of a run and a junction is a single cell, so the
+    # corners and the tees are solid — there is no dashed corner glyph, and
+    # falling back to the dash would leave a hole at every corner.
+    let d = renderBox("body", 8, 3, border = HeavyDashedBorder).split('\n')
+    check d[0] == "┏╍╍╍╍╍╍┓"
+    check d[2] == "┗╍╍╍╍╍╍┛"
+    check HeavyDashedBorder.cross == "╋"
+
+suite "borders built from the box-drawing table":
+  ## `boxdraw` is 256 generated entries, so what it needs is not more assertions
+  ## about individual glyphs — the module's own `static:` block has those — but
+  ## evidence that the generated data agrees with glyphs that were written out by
+  ## hand years earlier and looked at.
+
+  test "the uniform weights reproduce the built-ins exactly":
+    # The strongest check available on the table: three borders typed out by
+    # hand, matched glyph for glyph including all five junctions. A single
+    # transposed entry in the generator fails this.
+    check ruledBorder(lwThin) == SquareBorder
+    check ruledBorder(lwHeavy) == ThickBorder
+    check ruledBorder(lwDouble) == DoubleBorder
+    check ruledBorder(lwThin, rounded = true) == RoundedBorder
+
+  test "a uniform border leaves the interior rules to the fallback":
+    # Otherwise it would not compare equal to the hand-written one above, and
+    # more to the point there would be two spellings of the same glyph in every
+    # border the constructor makes.
+    check ruledBorder(lwDouble).innerHorizontal == ""
+    check ruledBorder(lwDouble).innerVertical == ""
+    check ruledBorder(lwDouble, lwThin).innerHorizontal == "─"
+    check ruledBorder(lwDouble, lwThin).innerVertical == "│"
+
+  test "mixed weights give the junctions no built-in has":
+    # The thing that could not be expressed at all before: a double frame with
+    # thin rules through it needs five glyphs that appear in none of the
+    # built-in borders.
+    let b = ruledBorder(lwDouble, lwThin)
+    check b.teeDown == "╤"
+    check b.teeUp == "╧"
+    check b.teeRight == "╟"
+    check b.teeLeft == "╢"
+    check b.cross == "┼"
+    let inv = ruledBorder(lwThin, lwDouble)
+    check inv.teeDown == "╥"
+    check inv.teeUp == "╨"
+    check inv.teeRight == "╞"
+    check inv.teeLeft == "╡"
+    check inv.cross == "╬"
+
+  test "every weight pairing draws an exact box":
+    # The dimensional assertion, over all sixteen pairings including the ones
+    # that degrade. A generated glyph two columns wide would wrap the frame.
+    # `ttable.nim` runs the same sixteen through a table, which is where the
+    # junctions are actually drawn.
+    for frame in LineWeight:
+      for rules in LineWeight:
+        let b = ruledBorder(frame, rules)
+        checkpoint $frame & " frame, " & $rules & " rules"
+        for w in [6, 20, 41]:
+          for line in renderBox("body", w, 5, title = "t", border = b).split('\n'):
+            check displayWidth(line) == w
+
+  test "a table built this way has every junction filled in":
+    # The same check `RuledBorders` gets, applied to what the constructor makes:
+    # a border that fell back to `horizontal` for a junction would still be
+    # exactly as wide, and would draw a frame that breaks at every column.
+    for frame in LineWeight:
+      for rules in LineWeight:
+        let b = ruledBorder(frame, rules)
+        checkpoint $frame & " " & $rules
+        for piece in [b.teeDown, b.teeUp, b.teeRight, b.teeLeft, b.cross]:
+          check piece.len > 0
+          check displayWidth(piece) == 1
+
+  test "a weightless border is a box of spaces, not an empty string":
+    # `lwNone` is a legitimate argument and its glyph is a space, so this comes
+    # out the same shape as `HiddenBorder` rather than as a frame with holes.
+    let b = ruledBorder(lwNone)
+    check b.horizontal == " "
+    check b.topLeft == " "
+    for line in renderBox("x", 10, 4, border = b).split('\n'):
+      check displayWidth(line) == 10
+
+suite "box drawing as an algebra":
+  test "every quad is one column, which is what a frame depends on":
+    for top in LineWeight:
+      for right in LineWeight:
+        for bottom in LineWeight:
+          for left in LineWeight:
+            let g = boxChar(top, right, bottom, left)
+            checkpoint $top & " " & $right & " " & $bottom & " " & $left
+            check g.len > 0
+            check displayWidth(g) == 1
+
+  test "combining a horizontal and a vertical gives the crossing":
+    let h = quad(right = lwThin, left = lwThin)
+    let v = quad(top = lwThin, bottom = lwThin)
+    check boxChar(combine(h, v)) == "┼"
+    check boxChar(combine(v, h)) == "┼"
+    # Order matters only where the two disagree, and then the second wins.
+    check combine(quad(top = lwThin), quad(top = lwHeavy)).top == lwHeavy
+    check combine(quad(top = lwHeavy), quad(top = lwNone)).top == lwHeavy
+
+  test "combining is how a grid draws itself":
+    # The use this exists for: run lines over a cell and ask what it became,
+    # without the caller tracking which lines have crossed it already.
+    var cell = quad()
+    check boxChar(cell) == " "
+    cell = combine(cell, quad(right = lwThin, left = lwThin))
+    check boxChar(cell) == "─"
+    cell = combine(cell, quad(bottom = lwThin))
+    check boxChar(cell) == "┬"
+    cell = combine(cell, quad(top = lwThin))
+    check boxChar(cell) == "┼"
+
+  test "a combination Unicode lacks degrades rather than coming back empty":
+    # Heavy meeting double has no glyph at any junction. Returning "" would put
+    # a hole in a frame; returning a marker would put a `?` in one.
+    for top in LineWeight:
+      for right in LineWeight:
+        let g = boxChar(top, right, lwHeavy, lwDouble)
+        check displayWidth(g) == 1
 
   test "a half-block border differs on opposite edges":
     # The reason the four fields exist at all: one `horizontal` and one
@@ -285,6 +468,89 @@ suite "wrapping":
   test "a non-positive width yields nothing rather than looping":
     check wrapText("anything", 0).len == 0
     check wrapText("anything", -5).len == 0
+
+suite "a gradient as a backdrop":
+  ## Two vertical samples in every cell, which is the same trick `gauge` plays
+  ## horizontally, and an angle that has to be computed in units where a cell is
+  ## two tall — a 45° ramp on the raw grid comes out at about 63°.
+
+  test "it is exactly the rectangle it was asked for, at every angle":
+    for w in [1, 7, 40]:
+      for h in [1, 3, 9]:
+        for a in [0.0, 30.0, 45.0, 90.0, 135.0, 180.0, 270.0, -45.0, 400.0]:
+          checkpoint "w=" & $w & " h=" & $h & " a=" & $a
+          let field = gradientFill(CoolGradient, w, h, a)
+          check blockHeight(field) == h
+          for line in field.split('\n'):
+            check displayWidth(line) == w
+
+  test "the degenerate sizes are empty, not a crash":
+    check gradientFill(CoolGradient, 0, 5) == ""
+    check gradientFill(CoolGradient, 5, 0) == ""
+    check gradientFill(CoolGradient, -3, -3) == ""
+
+  test "a horizontal ramp varies across and not down":
+    # Every row identical is what angle 0 means, and it is worth pinning because
+    # the y term is the one that carries the aspect correction: get its sign or
+    # its scale wrong and the rows stop matching.
+    let rows = gradientFill(CoolGradient, 20, 4, 0.0).split('\n')
+    for r in rows: check r == rows[0]
+    check rows[0] != gradientFill(CoolGradient, 20, 4, 90.0).split('\n')[0]
+
+  test "a vertical ramp varies down and not across":
+    let rows = gradientFill(CoolGradient, 20, 4, 90.0).split('\n')
+    for i in 1 .. rows.high: check rows[i] != rows[0]
+    # One run for the whole row, since every cell in it is the same colour —
+    # `Spans` coalescing, without which a 200-column backdrop carries 200
+    # redundant escape pairs for the renderer to compare every frame.
+    check rows[0].count("\e[") == 2
+
+  test "a cell carries two vertical samples, and only when they differ":
+    # `▀` with the lower half behind it is what doubles the vertical resolution.
+    # Where the two halves land on the same colour it is a space with a
+    # background instead: identical on screen, half the bytes, and the whole of
+    # a horizontal ramp.
+    check "▀" in gradientFill(CoolGradient, 4, 4, 90.0)
+    check "▀" notin gradientFill(CoolGradient, 40, 4, 0.0)
+    check "▀" notin gradientFill(CoolGradient, 4, 4, 90.0, halfBlock = false)
+    # Twice as many distinct colours down a column with it on as with it off,
+    # which is the claim in one number. Counting *escapes* instead does not say
+    # it — there is one per cell either way, and only what is inside it changes.
+    proc samples(s: string): int =
+      var seen: seq[string]
+      for prefix in ["38;2;", "48;2;"]:
+        var i = s.find(prefix)
+        while i >= 0:
+          var j = i + prefix.len
+          var seps = 0
+          while j < s.len and (s[j] in {'0' .. '9'} or (s[j] == ';' and seps < 2)):
+            if s[j] == ';': inc seps
+            inc j
+          let rgb = s[i + prefix.len ..< j]
+          if rgb notin seen: seen.add rgb
+          i = s.find(prefix, j)
+      seen.len
+    check samples(gradientFill(CoolGradient, 1, 8, 90.0)) == 16
+    check samples(gradientFill(CoolGradient, 1, 8, 90.0, halfBlock = false)) == 8
+
+  test "with no colour it is a rectangle of spaces":
+    # There is nothing left of a gradient once the colour is gone, so unlike
+    # every other widget there is nothing to degrade *to* — and a field of bare
+    # `▀` would be a picture of the trick rather than of the gradient.
+    let saved = colorProfile()
+    setColorProfile(cpNoColor)
+    let field = gradientFill(CoolGradient, 6, 2, 45.0)
+    check field == "      \n      "
+    setColorProfile(saved)
+
+  test "it composes as an ordinary block":
+    # The point of returning a string: a backdrop is something to put a dialog
+    # on, and `overlay` must not be able to tell it apart from any other block.
+    let back = gradientFill(CoolGradient, 30, 6, 45.0)
+    let composed = overlay(back, renderBox("hi", 10, 3), 5, 1)
+    check blockHeight(composed) == 6
+    for line in composed.split('\n'):
+      check displayWidth(line) == 30
 
 suite "compositing":
   test "fillBlock squares the block and styles every line":

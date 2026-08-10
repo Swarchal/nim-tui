@@ -18,7 +18,7 @@
 ## half of `nimtui/listview <listview.html>`_ and
 ## `nimtui/textarea <textarea.html>`_.
 
-import std/sequtils
+import std/[sequtils, math]
 import ./style
 export style
 
@@ -92,14 +92,93 @@ proc scrollbar*(v: Viewport, total: int, track = " ", thumb = "┃"): seq[string
   for i in 0 ..< v.height:
     result.add(if i >= start and i < start + size: thumb else: track)
 
+const EighthBlocks* = ["", "▁", "▂", "▃", "▄", "▅", "▆", "▇"]
+  ## Filled from the bottom, indexed by eighths of a cell — `EighthBlocks[3]` is
+  ## `▃`, three eighths. Index 0 is the empty string rather than `" "` so a
+  ## caller can tell "nothing to draw" from "a blank cell" without comparing
+  ## glyphs.
+  ##
+  ## There is no matching set filled from the *top*: `▔` is the only top-aligned
+  ## block element and it is one eighth. That asymmetry is why
+  ## `smoothScrollbar`_ reverses one of its two end cells instead of indexing a
+  ## second table — see the note there.
+
+proc smoothScrollbar*(v: Viewport, total: int, style = Style().faint(),
+                      trackStyle = Style(), track = " ",
+                      thumb = "█"): seq[string] =
+  ## `scrollbar`_ with the thumb positioned and sized to an eighth of a cell.
+  ##
+  ## One styled cell per visible row, each exactly one column. Empty when
+  ## `v.height` is zero, and all track when everything fits.
+  ##
+  ## Whole-cell resolution is coarser than it sounds. A ten-row window over a
+  ## thousand lines has nine cells of travel for nine hundred and ninety lines of
+  ## document, so the first ninety keypresses all draw the *same* picture and the
+  ## scrollbar reads as broken. In eighths those ninety draw seven, which
+  ## `tcomponents.nim` measures rather than asserting from the arithmetic.
+  ##
+  ## The two ends are drawn differently on purpose, and it is not symmetry that
+  ## was overlooked. The top of the thumb needs a cell filled from the bottom,
+  ## which is `EighthBlocks`_; the bottom of the thumb needs one filled from the
+  ## top, which Unicode does not have. So that cell is the same glyph with
+  ## foreground and background swapped — `reverse` is an attribute rather than a
+  ## colour, so this survives `cpNoColor` intact, unlike the sub-cell trick in
+  ## `widgets.gauge` which has to turn itself off there.
+  ##
+  ## `style` is the thumb's and `trackStyle` the gutter's; the partial cells take
+  ## the thumb's foreground over the track's background, so a scrollbar with a
+  ## track colour keeps it under the fractional ends.
+  if v.height <= 0: return @[]
+  let cells = v.height
+  let trackCell = trackStyle.render(track)
+  result = newSeqWith(cells, trackCell)
+  if total <= cells: return
+
+  let
+    partial = trackStyle.merge(style)
+    thumbCell = style.render(thumb)
+    # Never less than a cell: a two-eighth sliver is accurate and unfindable.
+    size = max(float(cells * cells) / float(total), 1.0)
+    scrollable = float(total - cells)
+    at = clamp(float(v.top) / scrollable, 0.0, 1.0)
+    # Truncate the start and round the size up, so a thumb is never drawn
+    # shorter than the fraction it stands for. Rounding both the same way
+    # instead loses an eighth off one end at most positions, and at the bottom
+    # of the document leaves the thumb short of the last row — which is read as
+    # "there is a little more" and is the one thing a scrollbar must not say
+    # wrongly.
+    startEighth = int((float(cells) - size) * at * 8.0)
+    endEighth = startEighth + int(ceil(size * 8.0))
+    startCell = startEighth div 8
+    endCell = endEighth div 8
+
+  for i in startCell ..< min(endCell, cells):
+    result[i] = thumbCell
+  if startCell < cells:
+    # `(8 - frac) mod 8`: a thumb starting `frac` eighths down the cell fills the
+    # `8 - frac` below it, and a start exactly on the boundary fills the whole
+    # cell, which the loop above already did.
+    let g = EighthBlocks[(8 - startEighth mod 8) mod 8]
+    if g.len > 0: result[startCell] = partial.render(g)
+  if endCell < cells:
+    let g = EighthBlocks[(8 - endEighth mod 8) mod 8]
+    if g.len > 0: result[endCell] = partial.reverse().render(g)
+
 proc withScrollbar*(v: Viewport, lines: sink seq[string], total: int,
-                    style = Style().faint()): seq[string] =
+                    style = Style().faint(), smooth = true): seq[string] =
   ## Append the scrollbar gutter to each already-padded line.
   ##
   ## `sink`, so a caller handing over rows it is finished with gets a move rather
   ## than a copy of every string in the seq — this runs once per frame.
-  let bar = v.scrollbar(total)
+  ##
+  ## `smooth` picks `smoothScrollbar`_ over `scrollbar`_. It defaults to on
+  ## because the whole-cell thumb is not a different look so much as a worse
+  ## answer to the same question, and a gutter is not something an application
+  ## chooses to opt into being accurate. Turn it off for a terminal or font
+  ## without the block elements, which is the same reason `AsciiBorder` exists.
+  let bar = if smooth: v.smoothScrollbar(total, style)
+            else: v.scrollbar(total).mapIt(style.render(it))
   result = lines
   while result.len < v.height: result.add ""
   for i in 0 ..< result.len:
-    result[i].add style.render(if i < bar.len: bar[i] else: " ")
+    result[i].add(if i < bar.len: bar[i] else: " ")

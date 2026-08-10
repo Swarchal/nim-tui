@@ -247,15 +247,28 @@ proc mouseTracking*(options: set[ProgramOption]): Option[MouseTracking] =
   elif poMouseClicks in options: some(mtClicks)
   else: none(MouseTracking)
 
-proc terminalModes[M](p: Program[M]): set[TerminalMode] =
-  ## The options that correspond to a terminal mode, which is what `tty` has to
-  ## put back. In one place so setup, teardown and the armed signal restore
-  ## cannot come to disagree about what is on.
-  if poAltScreen in p.options: result.incl tmAltScreen
-  if poHideCursor in p.options: result.incl tmHideCursor
-  if p.options.mouseTracking().isSome: result.incl tmMouse
-  if poBracketedPaste in p.options: result.incl tmBracketedPaste
-  if poFocusReporting in p.options: result.incl tmFocus
+proc terminalModes*(options: set[ProgramOption]): set[TerminalMode] =
+  ## The modes `options` puts the terminal into, which is what `tty` has to put
+  ## back. In one place so setup, teardown and the armed signal restore cannot
+  ## come to disagree about what is on.
+  ##
+  ## Takes the option set rather than the `Program` for the reason
+  ## `mouseTracking`_ does, and it is the one caller: what this decides is then
+  ## assertable with no terminal to set a mode on.
+  if poAltScreen in options: result.incl tmAltScreen
+  # Unconditional, and the only mode here with no option behind it. The renderer
+  # truncates every line to the terminal width and walks the cursor back over a
+  # block it believes is exactly as tall as it drew it; a line that wraps breaks
+  # both of those for every row below it, not just its own. Turning auto-wrap off
+  # does not make a mis-measured line correct — it makes it a clipped line rather
+  # than a frame out of step, which is the difference between a glitch and a
+  # display nobody can read. An application has no stake in that either way,
+  # which is what makes it the library's decision rather than an option.
+  result.incl tmLineWrap
+  if poHideCursor in options: result.incl tmHideCursor
+  if options.mouseTracking().isSome: result.incl tmMouse
+  if poBracketedPaste in options: result.incl tmBracketedPaste
+  if poFocusReporting in options: result.incl tmFocus
 
 proc setupTerminal[M](p: Program[M]) =
   p.terminal.enterRawMode()
@@ -264,8 +277,13 @@ proc setupTerminal[M](p: Program[M]) =
   # is a few instructions rather than the whole of startup. Arming the full
   # teardown before the modes are set is safe: turning off a mouse that was never
   # turned on is a no-op, as is leaving an alt screen never entered.
-  p.terminal.armRestore(p.terminalModes())
+  p.terminal.armRestore(p.options.terminalModes())
   if poAltScreen in p.options: p.terminal.enterAltScreen()
+  # After the alt screen rather than before it. DECAWM is not part of what mode
+  # 1049 saves and restores, but a terminal that did save it would restore the
+  # value from before the switch — so setting it on the buffer the program is
+  # about to draw on is the order that cannot be wrong either way.
+  p.terminal.disableLineWrap()
   if poHideCursor in p.options: p.terminal.hideCursor()
   let mouse = p.options.mouseTracking()
   if mouse.isSome: p.terminal.enableMouse(mouse.get)
@@ -276,7 +294,7 @@ proc restoreTerminal[M](p: Program[M]) =
   # The same bytes a terminating signal writes, minus what only a signal needs —
   # see `tty.emergencyEscapesFor`. Both go through `restoreEscapesFor`, so the
   # normal path and the handler cannot drift apart.
-  p.terminal.restoreModes(p.terminalModes())
+  p.terminal.restoreModes(p.options.terminalModes())
   # Only the renderer knows whether a block is on screen to move past, which is
   # exactly what a handler cannot ask it — hence the unconditional newline there.
   if poAltScreen notin p.options: p.renderer.finish()

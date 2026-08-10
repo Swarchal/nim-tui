@@ -209,6 +209,40 @@ suite "mouse tracking options":
     # third state was spelled "leave the mouse off entirely".
     check {poMouseClicks}.mouseTracking().isSome
 
+suite "the modes an option set puts the terminal into":
+  ## Same reasoning as the suite above: split out of `setupTerminal` so that what
+  ## it decides is assertable with no terminal to set a mode on.
+
+  test "each option contributes its own mode":
+    check tmAltScreen in {poAltScreen}.terminalModes()
+    check tmHideCursor in {poHideCursor}.terminalModes()
+    check tmMouse in {poMouseClicks}.terminalModes()
+    check tmBracketedPaste in {poBracketedPaste}.terminalModes()
+    check tmFocus in {poFocusReporting}.terminalModes()
+
+  test "an option nothing asked for is not set":
+    check tmAltScreen notin {poHideCursor}.terminalModes()
+    check tmMouse notin {poAltScreen, poFocusReporting}.terminalModes()
+
+  test "auto-wrap is off whatever the program asked for":
+    # The one mode with no option behind it: the renderer's arithmetic assumes no
+    # wrapping, so this is the library's decision and not the application's. A
+    # program that set no options at all still gets it, which is the case that
+    # would quietly regress if it were ever moved behind one.
+    check tmLineWrap in {}.terminalModes()
+    for o in ProgramOption:
+      checkpoint $o
+      check tmLineWrap in {o}.terminalModes()
+
+  test "every mode a program can reach is one the teardown undoes":
+    # `restoreEscapesFor` is what puts them back, and a mode set here with no
+    # branch there is a terminal left changed. The assertion is indirect because
+    # the two live in different modules on purpose.
+    let all = {ProgramOption.low .. ProgramOption.high}.terminalModes()
+    for m in all:
+      checkpoint $m
+      check restoreEscapesFor({m}).len > 0
+
 type Sized = object       ## the `TermSize` convention in an actual update proc
   size: TermSize
   reflows: int

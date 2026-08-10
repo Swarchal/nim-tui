@@ -120,6 +120,73 @@ proc gauge*(fraction: float, width: int, fill: Gradient, empty = "░",
       line.add(empty.repeat(width - used), emptyStyle)
   line.render()
 
+const
+  ThinBarFull* = "━"
+    ## The run a `thinBar`_ is drawn from, and the weight its two halves match.
+  ThinBarLeftHalf* = "╸"
+    ## The left half of a cell inked: how a bar *ends* part way through one.
+  ThinBarRightHalf* = "╺"
+    ## The right half. Not used by `thinBar`_, which always starts at column
+    ## zero, but exported for a bar that does not — a range, or a segment of a
+    ## timeline — since the pair is only useful together.
+
+proc thinBar*(fraction: float, width: int, empty = "─"): string =
+  ## A bar drawn as a *rule* rather than as filled cells, resolving half a cell.
+  ##
+  ## The difference from `gauge`_ is where the sub-cell information lives. A
+  ## gradient `gauge` puts it in the colour — two ramp samples behind one `▌` —
+  ## so it has to turn itself off under `cpNoColor` and lose half its resolution
+  ## with it. This puts it in the *glyph*: `━` is a full cell of rule and `╸` is
+  ## the left half of one, so a bar of two and a half cells is drawn as such with
+  ## no colour involved at all, and reads the same on a monochrome terminal.
+  ##
+  ## The cost of that is what it looks like: a rule through the middle of the
+  ## row rather than a solid bar, which is a quieter thing and a different one.
+  ## That is why it is a second widget rather than a flag on the first.
+  ##
+  ## `empty` is the light rule by default, so the unfilled part is still a track
+  ## rather than a gap — a bar at zero is then visible, which `gauge`'s `░`
+  ## achieves the other way round.
+  if width <= 0: return ""
+  let
+    halves = clamp(int(round(clamp(fraction, 0.0, 1.0) * float(width * 2))),
+                   0, width * 2)
+    whole = halves div 2
+  result = newStringOfCap(width * 3)
+  for _ in 0 ..< whole: result.add ThinBarFull
+  # A half is only reachable with `whole < width`, since `halves` is capped at
+  # `width * 2` and an odd number below that leaves at least one cell.
+  if halves mod 2 == 1:
+    result.add ThinBarLeftHalf
+    result.add empty.repeat(width - whole - 1)
+  else:
+    result.add empty.repeat(width - whole)
+
+proc thinBar*(fraction: float, width: int, fill: Gradient, empty = "─",
+              emptyStyle = Style().faint()): string =
+  ## `thinBar`_ with the filled run coloured along `fill`.
+  ##
+  ## The ramp is laid over the whole bar rather than over the filled part, for
+  ## the reason spelled out on `gauge`_. There is no half-block variant to choose
+  ## here: the resolution is already in the glyph, so the colour is free to be
+  ## one sample per cell and stay that way under every profile.
+  if width <= 0: return ""
+  let
+    halves = clamp(int(round(clamp(fraction, 0.0, 1.0) * float(width * 2))),
+                   0, width * 2)
+    whole = halves div 2
+    colours = fill.ramp(width)
+  var line: Spans
+  for i in 0 ..< whole:
+    line.add(ThinBarFull, Style().fg(colours[i]))
+  var used = whole
+  if halves mod 2 == 1:
+    line.add(ThinBarLeftHalf, Style().fg(colours[used]))
+    inc used
+  if used < width:
+    line.add(empty.repeat(width - used), emptyStyle)
+  line.render()
+
 proc sparkLevels(values: openArray[float], width: int):
     tuple[pad: int, levels: seq[int]] =
   ## Glyph indices (0..7) for the trailing `width` values, plus the left padding
@@ -430,6 +497,40 @@ proc spinner*(frame: int): string =
   # `floorMod`, not `mod`: Nim's `mod` keeps the sign of the dividend, so a
   # negative frame would index backwards out of the array.
   SpinnerFrames[floorMod(frame, SpinnerFrames.len)]
+
+proc pulse*(colours: Gradient, phase: float, cells = 5, glyph = "●",
+            spread = 0.125): string =
+  ## A spinner whose motion is in the colour rather than in the glyph: `cells`
+  ## identical dots, each sampling `colours` a little behind the one before it,
+  ## so a bright point travels along the row.
+  ##
+  ## `phase` is a position in the cycle rather than a frame index — it wraps at
+  ## 1.0 and only its fractional part is used, so `epochTime() * rate` can be
+  ## passed straight in and a redraw at any rate looks the same. That is the
+  ## difference from `spinner`_, which advances one discrete frame at a time
+  ## because it has ten of them and no others.
+  ##
+  ## Each dot's brightness eases as `(1 - x)²` over its own cycle, which is what
+  ## makes the trail fall away behind the point instead of stepping down evenly.
+  ## `spread` is the stagger between neighbouring dots as a fraction of the
+  ## cycle; at the default five dots cover five eighths of it, so there is always
+  ## a gap for the point to travel into.
+  ##
+  ## Under `cpNoColor` there is no motion left — every cell is the same glyph —
+  ## so it falls back to `spinner`_ padded to the same width. Changing width with
+  ## the profile would move whatever is laid out beside it, which is a worse
+  ## failure than a plainer spinner.
+  if cells <= 0: return ""
+  if colorProfile() == cpNoColor:
+    let frame = int(floorMod(phase, 1.0) * SpinnerFrames.len.float)
+    return spinner(frame) & spaces(cells - 1)
+  var line: Spans
+  for i in 0 ..< cells:
+    # `floorMod`, not `mod`: `phase - i * spread` goes negative for the dots
+    # behind the point, and Nim's `mod` keeps the sign of the dividend.
+    let x = floorMod(phase - i.float * spread, 1.0)
+    line.add(glyph, Style().fg(colours.at((1.0 - x) * (1.0 - x))))
+  line.render()
 
 proc keyHint*(key, desc: string): string =
   ## `key desc` with the key emphasised, for footer help lines.

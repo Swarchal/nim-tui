@@ -77,13 +77,20 @@ joinVertical(joinHorizontal([left, right], gap = 1),
 
 `nimtui/layout` - `renderBox` with a `Border`, `padBlock` / `padBlockLines`,
 `joinHorizontal` / `joinVertical`, `elide`, `centerVisible`, `blockWidth` /
-`blockHeight`.
+`blockHeight`. `ruledBorder(lwDouble, lwThin)` builds a border whose interior
+rules are lighter than its frame, junctions and all, and `gradientFill` draws an
+angled gradient as a block to `place` a dialog on.
 
-`nimtui/widgets` - `gauge`, `sparkline`, `barChart`, `spinner`, `keyHint`,
-`hints`. Each returns exactly the width asked for, using partial block glyphs so
-a bar resolves an eighth of a cell.
+`nimtui/boxdraw` - box-drawing glyphs as an algebra: four arms at four weights
+into one glyph, and `combine` to lay one line over another.
 
-Neither module touches a terminal or depends on the runtime, so they can be used
+`nimtui/digits` - numerals three rows tall, in a thin and a bold set.
+
+`nimtui/widgets` - `gauge`, `thinBar`, `sparkline`, `barChart`, `spinner`,
+`pulse`, `keyHint`, `hints`. Each returns exactly the width asked for, using
+partial block glyphs so a bar resolves an eighth of a cell.
+
+None of these touches a terminal or depends on the runtime, so they can be used
 on their own - and `update`/`view` can be tested without either.
 
 ## Examples

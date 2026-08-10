@@ -19,10 +19,20 @@ suite "restoring the terminal":
 
   test "each mode contributes its own escape and nothing else":
     check restoreEscapesFor({tmAltScreen}) == ExitAltScreen
+    check restoreEscapesFor({tmLineWrap}) == EnableLineWrap
     check restoreEscapesFor({tmHideCursor}) == ShowCursor
     check restoreEscapesFor({tmMouse}) == DisableMouse
     check restoreEscapesFor({tmBracketedPaste}) == DisableBracketedPaste
     check restoreEscapesFor({tmFocus}) == DisableFocusReporting
+
+  test "auto-wrap goes back on before the alt screen is left":
+    # The reverse of the order `setupTerminal` sets them in. Both halves matter:
+    # the mode is put back on the buffer it was cleared on, and a shell that
+    # inherits a terminal with auto-wrap off is nearly as broken as one that
+    # inherits it without ECHO.
+    let s = restoreEscapesFor({tmAltScreen, tmLineWrap})
+    check s.find(EnableLineWrap) >= 0
+    check s.find(EnableLineWrap) < s.find(ExitAltScreen)
 
   test "every mode contributes something, so none is silently forgotten":
     for m in TerminalMode:

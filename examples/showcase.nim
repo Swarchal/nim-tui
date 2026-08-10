@@ -1,10 +1,17 @@
-## Every presentation piece in the library, on four tabs.
+## Every presentation piece in the library, on five tabs.
 ##
 ## What this example is really about: the parts of nimtui that exist purely to
 ## make a view look like something. Gradients and themes for colour, `Panel` for
 ## framing, OSC 8 hyperlinks that cost no columns, `Table` for aligned data,
 ## `TextArea` and `ListView` for the two
 ## scrolling components, and `place` for a dialog drawn over the top of it all.
+##
+## The last tab is the four pieces that are purely about looking like something:
+## `gradientFill` as an angled backdrop with a card placed on it, `bigDigits` for
+## a figure three rows tall, `thinBar` beside the metrics tab's gradient `gauge`
+## — the same half-cell resolution, said with `╸` instead of with a second
+## colour, so it survives `NO_COLOR` where the gauge cannot — and `pulse`, a
+## spinner whose motion is in the colour rather than in the glyph.
 ##
 ## Also shows the one piece of bookkeeping the components need: they hold a
 ## width and a height, and something has to tell them when the terminal changes
@@ -33,6 +40,7 @@ type
     tTable = "table"
     tLogs = "logs"
     tList = "list"
+    tDisplay = "display"
 
   Service = object
     name: string
@@ -167,6 +175,7 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
     of "2": result[0].tab = tTable
     of "3": result[0].tab = tLogs
     of "4": result[0].tab = tList
+    of "5": result[0].tab = tDisplay
     else: discard
 
 # --- view ---------------------------------------------------------------------
@@ -204,7 +213,11 @@ proc tablePane(m: Model): string =
                    column("requests", align = aRight, headerAlign = aRight),
                    column("p99 ms", align = aRight, headerAlign = aRight),
                    column("status", align = aCenter, headerAlign = aCenter)])
-  tbl.borderChars = SquareBorder
+  # A frame heavier than the rules it divides, which is `ruledBorder`'s reason
+  # for existing: the five junctions where a thin rule meets a double frame are
+  # `╤ ╧ ╟ ╢ ┼`, and no built-in `Border` carries them. Written out by hand it is
+  # eleven glyphs and the wrong one is invisible until someone looks closely.
+  tbl.borderChars = ruledBorder(lwDouble, lwThin)
   tbl.borderStyle = t.borderStyle
   tbl.columns[0].headerStyle = t.titleStyle
   tbl.columns[1].headerStyle = t.titleStyle
@@ -232,6 +245,53 @@ proc listPane(m: Model): string =
                 itemStyle = Style(),
                 scrollbarStyle = t.mutedStyle)
 
+proc displayPane(m: Model): string =
+  ## The four pieces that are about looking like something rather than about
+  ## saying something: an angled gradient as a backdrop, a figure big enough to
+  ## read across a room, a bar whose half-cell is in the glyph, and a spinner
+  ## whose motion is entirely in the colour.
+  let
+    t = m.theme
+    w = m.innerWidth
+    h = m.innerHeight
+    secs = (getMonoTime() - m.started).inMilliseconds div 1000
+    cpu = if m.cpu.len == 0: 0.0 else: m.cpu[^1]
+    cardWidth = min(w - 4, 52)
+    # The card's interior, less the six columns of label and the eight the
+    # trailing figure needs. Measured rather than guessed at, because a bar one
+    # column too wide truncates the figure off the end of its own row.
+    barWidth = max(cardWidth - 6 - 6 - 8, 4)
+
+  # `bigDigits` is three rows whatever it is given, so a clock is the one thing
+  # that can be laid out around it without measuring first.
+  var card = @[bigDigits(&"{secs div 60:02}:{secs mod 60:02}", bold = true)]
+  card.add ""
+  # A thin bar beside the gradient `gauge` on the metrics tab: the same value,
+  # with the half cell said by `╸` rather than by a second colour. Under
+  # `NO_COLOR` this one keeps its resolution and that one cannot.
+  card.add t.mutedStyle.render(padVisible("cpu", 6)) &
+           thinBar(cpu / 100.0, barWidth, t.ramp) &
+           t.accentStyle.render(&" {cpu:5.1f}%")
+  card.add t.mutedStyle.render(padVisible("plain", 6)) &
+           thinBar(cpu / 100.0, barWidth)
+  card.add ""
+  # `m.frame` is a 90 ms tick, so a cycle every eighteen frames is a shade under
+  # two seconds — and `pulse` takes the position rather than the frame, which is
+  # what lets that be chosen here rather than baked into the widget.
+  card.add pulse(t.ramp, m.frame.float / 18.0) & " " &
+           t.mutedStyle.render("working")
+
+  let body = panel(EvenBlockBorder)
+    .title(" display ", aCenter)
+    .pad(2)
+    .styled(border = t.accentStyle, title = t.titleStyle)
+    .render(card.join("\n"), cardWidth, 14)
+
+  # The backdrop is an ordinary block, which is the whole point of it being a
+  # string: `place` cannot tell it from a pane and keeps its dimensions, so the
+  # card sits on the gradient without either of them resizing the other.
+  place(gradientFill(t.ramp, w, h, angle = 35.0), body)
+
 proc helpDialog(m: Model): string =
   let t = m.theme
   # `keyHint` runs the key straight into the description, which is right for a
@@ -243,7 +303,7 @@ proc helpDialog(m: Model): string =
   let body = @[
     "",
     row("tab / h l", "switch tabs"),
-    row("1 - 4", "jump to a tab"),
+    row("1 - 5", "jump to a tab"),
     row("j / k", "scroll or move the cursor"),
     row("pgup / pgdn", "scroll a page"),
     row("g / G", "top and bottom"),
@@ -290,6 +350,7 @@ proc view(m: Model): string =
     of tTable: m.tablePane
     of tLogs: m.logs.render()
     of tList: m.listPane
+    of tDisplay: m.displayPane
 
   let pane = panel(RoundedBorder)
     .title(" " & $m.tab & " ")

@@ -13,9 +13,14 @@
 ##   `gauge` does. `h` turns it off, and the narrow bars are where it shows —
 ##   eight columns holding sixteen colours against eight.
 ##
-## The third panel is every `Border` the library has, including the two
-## half-block ones, whose ink faces outward (`outer`) or inward (`inner`) so a
-## panel reads as a slab rather than as a wire frame.
+## The third panel is every `Border` the library has, led by the six that divide
+## a cell. The half-block pair's ink faces outward (`outer`) or inward (`inner`)
+## so a panel reads as a slab rather than as a wire frame; `even` is the solid
+## block trimmed to half a cell top and bottom, which is what makes its four
+## sides look the same thickness on a grid whose cells are twice as tall as they
+## are wide. The two hairlines are the far end of the same scale — a full cell
+## of layout for an eighth of a cell of ink, which is the only way to quieten a
+## pane without moving it.
 ##
 ## No timer and no state worth the name: this is a picture, and the keys only
 ## change how it is drawn.
@@ -32,12 +37,18 @@ const
            ("red → cyan", hex"#ff0000", hex"#00ffff"),
            ("violet → lime", hex"#7b2ff7", hex"#a3ff12"),
            ("black → white", hex"#000000", hex"#ffffff")]
-  # The three block borders first: this example exists for them, and a gallery
-  # that drops its last row on a short terminal must not drop the point.
+  # The sub-cell borders first: this example exists for them, and a gallery that
+  # drops its last row on a short terminal must not drop the point. The four
+  # block ones lead, then the two hairlines — which are the same idea taken to
+  # the other extreme, a whole cell of layout and an eighth of a cell of ink.
   Borders = [("outer", OuterHalfBlockBorder), ("inner", InnerHalfBlockBorder),
-             ("block", BlockBorder), ("rounded", RoundedBorder),
+             ("block", BlockBorder), ("even", EvenBlockBorder),
+             ("hair ─", HairlineHorizontalBorder),
+             ("hair │", HairlineVerticalBorder),
+             ("rounded", RoundedBorder),
              ("square", SquareBorder), ("double", DoubleBorder),
              ("thick", ThickBorder), ("dashed", DashedBorder),
+             ("hv dash", HeavyDashedBorder),
              ("ascii", AsciiBorder), ("hidden", HiddenBorder)]
   BoxW = 13                    ## wide enough for the longest label plus a space
   BoxH = 3                     ## two border rows and one of interior
