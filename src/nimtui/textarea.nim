@@ -41,26 +41,61 @@ type
     xOffset*: int              ## horizontal scroll; only meaningful when not wrapping
     lineStyle*: Style
     scrollbarStyle*: Style
+    tabStop*: int
+      ## Columns between tab stops, for the expansion described on `reflow`_.
+      ## `0` — the zero value, so a `TextArea()` built without `initTextArea`
+      ## still behaves — means `ansi.DefaultTabStop`, which is 8 and is what the
+      ## terminal itself would have done. Set it to 4 to show code the way an
+      ## editor configured that way would; there is no value meaning "leave
+      ## tabs alone", because that is the bug rather than a setting.
     wrapped: seq[string]       ## `lines` after wrapping — rebuilt by `reflow`
 
 proc textWidth*(ta: TextArea): int =
   ## Columns available to the text itself, once the gutter is taken out.
   max(ta.width - (if ta.showScrollbar: 1 else: 0), 0)
 
+proc flattened(ta: TextArea, line: string): string {.inline.} =
+  ## One source line as something that can be measured.
+  ##
+  ## This is CLAUDE.md's flatten-before-you-measure rule at the boundary that
+  ## needed it most and had it least: a pager is pointed at *files*, and a file
+  ## is where a tab is not an edge case. `runeWidth` measures one as zero columns
+  ## and the terminal draws it as a jump to the next stop, so the pane pads a
+  ## line to what it believes is the full width and the terminal puts it over the
+  ## edge. `program` turns auto-wrap off for every program, so what came of that
+  ## was a clipped line rather than a frame out of step — a file shown with its
+  ## indentation wrong, its columns not lining up, and the right-hand end of
+  ## every tabbed line quietly cut. Every dimensional assertion in the suite
+  ## agrees the line is the right width, which is why this went unnoticed.
+  ##
+  ## Tabs first, then everything else, because `oneLine` would otherwise turn
+  ## each tab into a single space and the indentation would be gone before it
+  ## was expanded. Both have a byte-scan fast path, so a line with neither — the
+  ## overwhelming case — is returned untouched.
+  oneLine(expandTabs(line, if ta.tabStop > 0: ta.tabStop else: DefaultTabStop))
+
 proc reflow*(ta: var TextArea) =
   ## Rebuild the wrapped form. Called for you by everything in this module that
   ## changes the content or the width; call it yourself only after writing to
   ## `lines` directly.
+  ##
+  ## Flattening happens here rather than in `setLines`_ and friends, so that
+  ## `lines` stays the source it says it is and the escape hatch above — write
+  ## to `lines`, then call this — cannot skip it. `wrappedLines`_ is therefore
+  ## not always `lines` cut up: it is what will be *drawn*, tabs expanded and
+  ## control characters gone, which is also what a search over it should be
+  ## matching against.
   let w = ta.textWidth
   if not ta.wrap or w <= 0:
-    ta.wrapped = ta.lines
+    ta.wrapped = newSeqOfCap[string](ta.lines.len)
+    for line in ta.lines: ta.wrapped.add ta.flattened(line)
   else:
     ta.wrapped = newSeqOfCap[string](ta.lines.len)
     for line in ta.lines:
       # An empty source line wraps to nothing, which would silently delete the
       # blank lines that separate paragraphs.
       if line.len == 0: ta.wrapped.add ""
-      else: ta.wrapped.add wrapText(line, w)
+      else: ta.wrapped.add wrapText(ta.flattened(line), w)
   if ta.follow: ta.vp.toBottom ta.wrapped.len
   else: ta.vp.clampTop ta.wrapped.len
 
@@ -98,8 +133,9 @@ proc add*(ta: var TextArea, line: string) =
   ## each time makes it quadratic.
   ta.lines.add line
   let w = ta.textWidth
-  if not ta.wrap or w <= 0 or line.len == 0: ta.wrapped.add line
-  else: ta.wrapped.add wrapText(line, w)
+  if line.len == 0: ta.wrapped.add ""
+  elif not ta.wrap or w <= 0: ta.wrapped.add ta.flattened(line)
+  else: ta.wrapped.add wrapText(ta.flattened(line), w)
   if ta.follow: ta.vp.toBottom ta.wrapped.len
 
 proc clear*(ta: var TextArea) =

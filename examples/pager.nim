@@ -164,6 +164,10 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
 
     case $k
     of "q", "ctrl+c": result[1] = quitCmd()
+    # Raw mode clears ISIG, so this arrives as an ordinary key and the runtime
+    # cannot bind it: ctrl+z is undo about as often as it is suspend. A pager is
+    # the archetypal thing to background, so it says so.
+    of "ctrl+z": result[1] = suspendCmd()
     of "/":
       result[0].mode = mSearching
       result[0].query.clear()
@@ -210,7 +214,8 @@ proc view(m: Model): string =
       statusBar(" " & t.warnStyle.render(m.status), "", "", w)
     else:
       statusBar(" " & hints({"/": "search", "n": "next", "w": "wrap",
-                             "j/k": "scroll", "q": "quit"}), "", "", w)
+                             "j/k": "scroll", "^z": "bg", "q": "quit"}),
+                "", "", w)
 
   joinVertical(header, pane, bottom)
 

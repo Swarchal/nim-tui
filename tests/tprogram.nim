@@ -34,6 +34,7 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
     of "a": result[1] = msgCmd(AddMsg(delta: 1))
     of "b": result[1] = batch(msgCmd(AddMsg(delta: 2)), msgCmd(PingMsg()))
     of "t": result[1] = tick(initDuration(milliseconds = 5))
+    of "z": result[1] = suspendCmd()
     else: discard
   elif msg of ErrorMsg:
     result[0].log.add "error: " & ErrorMsg(msg).error.msg
@@ -122,6 +123,29 @@ suite "quitting":
   test "a QuitMsg is not forwarded to update":
     let m = prog().runHeadless(@[Msg(QuitMsg()), Msg(key("x"))])
     check m.log.len == 0
+
+suite "suspending":
+  ## The intercept, and nothing about the signal — a test process that actually
+  ## stopped itself would take the suite with it, which is exactly why
+  ## `runHeadless` refuses. What is on the wire is `tests/manual/signals.py`'s.
+
+  test "suspendCmd produces a SuspendMsg":
+    let msg = suspendCmd()()
+    check msg of SuspendMsg
+
+  test "a SuspendMsg is not forwarded to update":
+    # Runtime bookkeeping, like QuitMsg, BatchMsg and ScheduleMsg: intercepted in
+    # `handle` and never seen by an application.
+    let m = prog().runHeadless(@[Msg(SuspendMsg()), Msg(key("x"))])
+    check m.log == @["x"]
+
+  test "and headless does not stop the process that is testing it":
+    # The assertion is that this returns at all. `suspend` is the one runtime
+    # operation that is not reached through `p.terminal` — it is a kill on this
+    # process — so the headless guard is the only thing between a test suite and
+    # a stopped test suite.
+    let m = prog().runHeadless(@[Msg(key("z")), Msg(key("x"))])
+    check m.log == @["z", "x"]
 
 suite "timers":
   test "scheduled messages are delivered":

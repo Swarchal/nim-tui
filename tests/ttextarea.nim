@@ -201,3 +201,78 @@ suite "textarea line style":
     check (Reset & ls.sgr()) in pane
     for line in pane.split('\n'):
       check displayWidth(line) == 20
+
+suite "textarea flattening":
+  ## A pager is pointed at *files*, and a file is where a tab is not an edge
+  ## case. `runeWidth` measures one as zero columns and the terminal draws it as
+  ## a jump, so a pane holding one pads a line to what it believes is the full
+  ## width and the terminal puts it over the edge — clipped rather than wrapped,
+  ## since auto-wrap is off, which is why the symptom was a file shown with its
+  ## indentation wrong rather than a frame falling apart. Every dimensional
+  ## assertion above agrees the line is the right width, which is exactly why
+  ## this went unnoticed.
+
+  test "a tab is expanded, not drawn":
+    var ta = initTextArea(width = 20, height = 3, showScrollbar = false)
+    ta.setText "a\tb"
+    let pane = ta.render()
+    check '\t' notin pane
+    check pane.split('\n')[0] == "a       b           "
+
+  test "and the pane is as wide as the terminal will draw it":
+    # The assertion the rest of this file makes, on the input that used to pass
+    # it while being wrong: `displayWidth` said 20 because the tab counted zero.
+    for w in [8, 12, 20, 40]:
+      for src in ["a\tb", "\tindented", "日\tx", "no tabs here", "a\t\tb"]:
+        checkpoint $w & " " & escape(src)
+        var ta = initTextArea(width = w, height = 2, wrap = false,
+                              showScrollbar = false)
+        ta.setText src
+        for line in ta.render().split('\n'):
+          check displayWidth(line) == w
+          check '\t' notin line
+
+  test "the other control characters go too":
+    var ta = initTextArea(width = 20, height = 2, showScrollbar = false)
+    # A newline reaching `lines` as part of one entry would make the pane one
+    # row taller than it says it is.
+    ta.setLines @["one\ntwo"]
+    check ta.render().split('\n').len == 2
+
+  test "tabStop is a preference and zero is the terminal's default":
+    var ta = initTextArea(width = 20, height = 1, showScrollbar = false)
+    ta.setText "a\tb"
+    check ta.wrappedLines[0] == "a       b"     # 0 means 8
+    ta.tabStop = 4
+    ta.reflow()
+    check ta.wrappedLines[0] == "a   b"
+
+  test "wrapping measures the expanded line":
+    # A tab counted as zero columns fits under any width, so an unexpanded line
+    # never wraps and comes out over-wide instead.
+    var ta = initTextArea(width = 12, height = 6, showScrollbar = false)
+    ta.setText "\tindented text that has to wrap"
+    check ta.lineCount > 1
+    for line in ta.render().split('\n'):
+      check displayWidth(line) == 12
+
+  test "reflow is the boundary, so a direct write to lines is covered":
+    # The module's one escape hatch — write `lines`, then `reflow` — must not be
+    # the way round it.
+    var ta = initTextArea(width = 20, height = 2, showScrollbar = false)
+    ta.lines = @["x\ty"]
+    ta.reflow()
+    check '\t' notin ta.render()
+
+  test "add takes the same path as setText":
+    var ta = initTextArea(width = 20, height = 3, showScrollbar = false)
+    ta.add "a\tb"
+    ta.add ""
+    check ta.wrappedLines[0] == "a       b"
+    check ta.wrappedLines[1] == ""
+
+  test "text with nothing to flatten is untouched":
+    var ta = initTextArea(width = 20, height = 4, showScrollbar = false)
+    let src = @["plain", "日本語", "\e[31mred\e[0m"]
+    ta.setLines src
+    check ta.wrappedLines == src

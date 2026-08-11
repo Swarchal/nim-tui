@@ -283,6 +283,56 @@ proc oneLine*(s: string): string =
     if r.isControl: result.add ' '
     else: result.addSlice s, start, i - 1
 
+const DefaultTabStop* = 8
+  ## Where a terminal puts its tab stops when nobody has said otherwise, and so
+  ## the only value at which `expandTabs`_ reproduces what the terminal would
+  ## have drawn. A viewer offering 4 is offering a *preference*; 8 is the answer
+  ## to "what does this file look like".
+
+proc expandTabs*(s: string, stop = DefaultTabStop): string =
+  ## `s` with every tab replaced by spaces up to the next multiple of `stop`.
+  ##
+  ## The other half of `oneLine`_, and the half that has to run first. A tab is
+  ## a control character, so `oneLine` turns it into *one* space — right for a
+  ## status bar, where the point is only that it stops being an action, and
+  ## wrong for a document, where the columns it was standing in are the
+  ## indentation. Running them the other way round silently gives the status-bar
+  ## answer to both.
+  ##
+  ## Why this is not optional for anything showing a file: `runeWidth` measures
+  ## a tab as zero columns and the terminal draws it as a jump, so a line
+  ## containing one is drawn wider than it was measured. Per the no-wrap rule
+  ## that desynchronises every row below it, not just its own — the same failure
+  ## `oneLine` exists to prevent, arriving through the one control character
+  ## that is completely ordinary in the text a pager is pointed at.
+  ##
+  ## Columns are counted the way everything else here counts them: escape
+  ## sequences are skipped and a wide rune is two, so a tab after CJK text lands
+  ## on the stop the terminal would put it on. `stop` of 0 or less returns `s`
+  ## untouched, and so does a string with no tab in it — a byte scan, since a
+  ## tab byte cannot occur inside a UTF-8 sequence.
+  if stop <= 0 or s.find('\t') < 0: return s
+  result = newStringOfCap(s.len + stop)
+  var
+    i = 0
+    col = 0
+  while i < s.len:
+    let n = escapeLen(s, i)
+    if n > 0:
+      result.addSlice s, i, i + n - 1
+      i += n
+      continue
+    let start = i
+    var r: Rune
+    fastRuneAt(s, i, r, true)
+    if r == Rune('\t'):
+      let pad = stop - (col mod stop)
+      for _ in 0 ..< pad: result.add ' '
+      col += pad
+    else:
+      result.addSlice s, start, i - 1
+      col += runeWidth(r)
+
 proc truncateVisible*(s: string, width: int): string =
   ## `s` cut to `width` visible columns. Escape sequences are always kept, even
   ## past the cut, so trailing resets still apply and colours do not bleed.

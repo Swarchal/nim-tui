@@ -238,3 +238,40 @@ func runeWidth*(c: char): int =
   ## Convenience for ASCII. Bytes above 0x7F are fragments of a UTF-8 sequence
   ## and cannot be measured alone, so they are 0.
   if c.ord < 0x20 or c.ord >= 0x7F: 0 else: 1
+
+# --- runes and the columns they land in ---------------------------------------
+#
+# The two directions of the same map, for anything holding text as runes and
+# needing to know where on screen a given one sits: a cursor, a click, a
+# selection. `ansi`'s `displayWidth` and `sliceVisible` answer the string form of
+# this question; these are the rune-sequence form, and they are here rather than
+# there because there is no escape sequence in a `seq[Rune]` to skip — a buffer
+# holding one is already broken, as `textinput <textinput.html>`_ documents.
+#
+# They exist because the alternative is every caller writing the loop, and the
+# loop everybody writes is `index` — which is the same number only until a line
+# contains something two columns wide, and is then wrong on exactly the lines
+# nobody tests with.
+
+func columnOf*(runes: openArray[Rune], index: int): int =
+  ## The column rune `index` starts at, counting from 0.
+  ##
+  ## `index` may be `runes.len`, which gives the width of the whole sequence —
+  ## that is where a cursor sitting one past the end belongs, so it is a valid
+  ## argument rather than an off-by-one. Larger values clamp to it.
+  for i in 0 ..< min(index, runes.len): result += runeWidth(runes[i])
+
+func runeAtColumn*(runes: openArray[Rune], column: int): int =
+  ## The index of the rune covering `column`, or `runes.len` if the sequence
+  ## ends first.
+  ##
+  ## The inverse of `columnOf`_ where one exists, and where one does not — a
+  ## column in the *middle* of a wide rune — it returns that rune rather than
+  ## the next, so `columnOf(runes, runeAtColumn(runes, c)) <= c` always holds.
+  ## That is the direction a cursor has to round: landing past the character you
+  ## pointed at is the wrong answer, and landing between two is not an answer.
+  var col = 0
+  for i in 0 ..< runes.len:
+    col += runeWidth(runes[i])
+    if col > column: return i
+  runes.len

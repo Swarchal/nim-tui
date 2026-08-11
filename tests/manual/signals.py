@@ -39,6 +39,9 @@ DISABLE_PASTE = b"\x1b[?2004l"
 DISABLE_FOCUS = b"\x1b[?1004l"
 ENABLE_WRAP = b"\x1b[?7h"
 RESET = b"\x1b[0m"
+ENTER_ALT = b"\x1b[?1049h"
+HIDE_CURSOR = b"\x1b[?25l"
+DISABLE_WRAP = b"\x1b[?7l"
 
 failures = []
 
@@ -199,6 +202,200 @@ def case(name, sig, modes, expect):
           % signal.Signals(sig).name)
 
 
+def process_state(pid):
+    """The single-letter state from /proc: `T` is stopped, `R`/`S` running.
+
+    Read rather than waited for, because the driver is not this process's
+    parent — see `play_suspend`. Linux-only, like nothing else in this file, and
+    the alternative is relaying every status through the pipe.
+    """
+    with open("/proc/%d/stat" % pid) as f:
+        return f.read().rsplit(")", 1)[1].split()[0]
+
+
+def await_state(pid, want, seconds=2.0):
+    until = time.time() + seconds
+    while time.time() < until:
+        try:
+            if process_state(pid) == want:
+                return True
+        except OSError:
+            return False
+        time.sleep(0.02)
+    return False
+
+
+def play_suspend(modes, via_key, sig=signal.SIGTSTP):
+    """Stop the program, continue it, stop it again, then kill it.
+
+    **Two forks, and the second one is not incidental.** A `pty.fork` child is a
+    session leader, so its process group has no parent process in the same
+    session — it is *orphaned*, and the kernel discards stop signals sent to an
+    orphaned process group so that nothing can be left stopped with nobody able
+    to continue it. Under a plain `pty.fork` the program therefore never stops
+    at all, and this whole case would be measuring the wrong thing while looking
+    like it worked.
+
+    So the pty child plays the part of the shell: it forks the program into a
+    process group of its own and hands it the terminal, which is what a real job
+    control shell does and is the only arrangement in which ctrl+z means
+    anything. The pty child then waits, and reports the final status down a pipe
+    because the driver is a grandparent and cannot `waitpid`.
+
+    Stopping twice is also on purpose. The handler disarms itself in order to
+    re-raise under the default disposition, so something has to put it back — if
+    nothing does, the *first* stop looks perfect and the second takes the
+    default action and leaves the terminal exactly as this exists to prevent.
+
+    Returns a dict of the buffer slices and the tty state at each step.
+    """
+    r_fd, w_fd = os.pipe()
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.close(r_fd)
+        os.environ["TERM"] = "xterm-256color"
+        gpid = os.fork()
+        if gpid == 0:
+            os.close(w_fd)
+            os.setpgid(0, 0)
+            # Handing the terminal to a background process group raises SIGTTOU
+            # at the process doing the handing, which is this one.
+            signal.signal(signal.SIGTTOU, signal.SIG_IGN)
+            os.tcsetpgrp(0, os.getpgid(0))
+            os.execv(PROG, [PROG] + modes)
+        os.write(w_fd, b"%d\n" % gpid)
+        _, st = os.waitpid(gpid, 0)
+        os.write(w_fd, b"%d\n" % st)
+        os._exit(0)
+    os.close(w_fd)
+
+    reader = os.fdopen(r_fd)
+    gpid = int(reader.readline())
+
+    buf = b""
+
+    def drain(seconds):
+        nonlocal buf
+        until = time.time() + seconds
+        while time.time() < until:
+            r, _, _ = select.select([fd], [], [], 0.05)
+            if not r:
+                continue
+            try:
+                chunk = os.read(fd, 65536)
+            except OSError:
+                return
+            if not chunk:
+                return
+            buf += chunk
+
+    drain(1.0)
+    out = {"raw_running": termios.tcgetattr(fd), "gpid": gpid}
+
+    def stop():
+        mark = len(buf)
+        if via_key:
+            os.write(fd, b"z")
+        else:
+            os.kill(gpid, sig)
+        stopped = await_state(gpid, "T")
+        drain(0.3)
+        return stopped, buf[mark:]
+
+    def go():
+        mark = len(buf)
+        os.kill(gpid, signal.SIGCONT)
+        drain(0.6)
+        return buf[mark:]
+
+    out["stopped1"], out["tail1"] = stop()
+    out["attrs_stopped"] = termios.tcgetattr(fd)
+    out["resume1"] = go()
+    out["attrs_resumed"] = termios.tcgetattr(fd)
+
+    out["stopped2"], out["tail2"] = stop()
+    out["attrs_stopped2"] = termios.tcgetattr(fd)
+    out["resume2"] = go()
+
+    mark = len(buf)
+    os.kill(gpid, signal.SIGTERM)
+    drain(1.0)
+    out["tail_final"] = buf[mark:]
+    out["status"] = int(reader.readline())
+    out["attrs_final"] = termios.tcgetattr(fd)
+    os.waitpid(pid, 0)
+    reader.close()
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+    if VERBOSE:
+        for k in ("tail1", "resume1", "tail2", "tail_final"):
+            print("    %s: %s" % (k, repr(out[k])))
+    return out
+
+
+def stopped_case(name, modes):
+    """SIGSTOP, which cannot be caught, so no handler runs and nothing is restored.
+
+    Everything here is about the resume taking the *other* branch. The terminal
+    was never handed back, so it must not be re-entered from scratch: doing that
+    saves the raw settings as the ones to put back at exit, and the run then ends
+    by handing the shell a raw terminal — having looked correct at every earlier
+    step, including every check in the SIGTSTP cases above.
+    """
+    print("%s:" % name)
+    r = play_suspend(modes, via_key=False, sig=signal.SIGSTOP)
+
+    check(r["stopped1"], "  the process stops, there being no handler to argue")
+    check(not cooked(r["attrs_stopped"]),
+          "  the terminal is still raw while stopped, since nothing restored it")
+    check(not cooked(r["attrs_resumed"]), "  and still raw after the continue")
+    check(b"holding the terminal" in r["resume1"], "  the frame is redrawn anyway")
+
+    # The one this case exists for.
+    check(cooked(r["attrs_final"]),
+          "  ECHO and ICANON are back on at exit, so the saved settings survived")
+    check(os.WIFSIGNALED(r["status"]) and os.WTERMSIG(r["status"]) == signal.SIGTERM,
+          "  and the exit status is still honest")
+
+
+def suspend_case(name, modes, via_key):
+    print("%s:" % name)
+    r = play_suspend(modes, via_key)
+
+    check(not cooked(r["raw_running"]),
+          "  the program really had the terminal in raw mode")
+
+    # The half that fails silently in the other direction from the terminate
+    # cases: a handler that puts the terminal back and then *carries on running*
+    # leaves every check below looking right, and ctrl+z simply does nothing.
+    check(r["stopped1"], "  the process actually stops")
+
+    check(r["tail1"].startswith(END_SYNC),
+          "  synchronised output is ended before stopping")
+    check(EXIT_ALT in r["tail1"], "  the alt screen is left on the way down")
+    check(ENABLE_WRAP in r["tail1"], "  auto-wrap is turned back on")
+
+    # The same assertion the terminate cases call *the* bug, and it matters more
+    # here: a shell is about to be typed at, and the program means to come back.
+    check(cooked(r["attrs_stopped"]), "  ECHO and ICANON are back on while stopped")
+
+    check(not cooked(r["attrs_resumed"]), "  raw mode is taken again on resume")
+    check(ENTER_ALT in r["resume1"], "  the alt screen is re-entered")
+    check(DISABLE_WRAP in r["resume1"], "  auto-wrap is turned off again")
+    check(b"holding the terminal" in r["resume1"],
+          "  the frame is redrawn rather than diffed against a screen a shell used")
+
+    check(r["stopped2"], "  a second stop still stops")
+    check(cooked(r["attrs_stopped2"]),
+          "  and still puts the terminal back, so the handler was reinstalled")
+
+    check(cooked(r["attrs_final"]), "  ECHO and ICANON are back on after the kill")
+    check(os.WIFSIGNALED(r["status"]) and os.WTERMSIG(r["status"]) == signal.SIGTERM,
+          "  and the exit status is still honest")
+
+
 build()
 
 case("everything on", signal.SIGTERM,
@@ -245,6 +442,10 @@ def split_case(name, sig, modes, expect):
           "  killed by %s, so the exit status stays honest"
           % signal.Signals(sig).name)
 
+
+suspend_case("stopped from outside", ["alt", "cursor", "mouse"], via_key=False)
+suspend_case("suspended by the program itself", ["alt", "cursor"], via_key=True)
+stopped_case("stopped with SIGSTOP, which no handler sees", ["alt", "cursor"])
 
 split_case("input and output on different ttys", signal.SIGTERM,
            ["alt", "cursor", "mouse"],

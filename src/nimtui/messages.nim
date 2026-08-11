@@ -129,6 +129,11 @@ type
     dueAt*: MonoTime
     payload*: Msg
 
+  SuspendMsg* = ref object of Msg
+    ## Internal: stop the process the way ctrl+z stops one that is not in raw
+    ## mode. Produced by `suspendCmd`_, intercepted by the runtime, and never
+    ## forwarded to `update`.
+
   ErrorMsg* = ref object of Msg
     ## A command raised. The runtime forwards this to `update` rather than
     ## unwinding, so the application decides whether to quit.
@@ -141,6 +146,21 @@ type
 proc quitCmd*(): Cmd =
   ## Command that stops the program.
   result = proc (): Msg = QuitMsg()
+
+proc suspendCmd*(): Cmd =
+  ## Command that suspends the program, as ctrl+z does for a program that is not
+  ## in raw mode. The terminal is put back first and set up again on resume, and
+  ## the program carries on from the next message.
+  ##
+  ## Explicit rather than automatic, unlike the handler that catches a `SIGTSTP`
+  ## arriving from outside. Raw mode clears `ISIG`, so ctrl+z reaches `update` as
+  ## an ordinary key — and plenty of programs want it for something else, undo
+  ## being the obvious one. Binding it is therefore the application's decision,
+  ## the same way `quitCmd`_ is while the terminate handler is not.
+  ##
+  ## A no-op under `runHeadless`, which has no terminal to put back and no
+  ## business stopping the test process that is driving it.
+  result = proc (): Msg = SuspendMsg()
 
 proc msgCmd*(m: Msg): Cmd =
   ## Command that immediately re-injects `m`.

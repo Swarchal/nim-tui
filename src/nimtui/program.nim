@@ -85,6 +85,12 @@ type
     pending: seq[Cmd]
     timers: seq[ScheduleMsg]
     running: bool
+    headless: bool
+      ## Set by `runHeadless`. Only `SuspendMsg` reads it, and it has to: every
+      ## other terminal operation is reached through `p.terminal`, which a
+      ## headless run simply never touches, whereas stopping the process is a
+      ## `kill` on the process itself — and the process running a headless
+      ## program is a test suite.
     lastSize: tuple[width, height: int]
 
 const
@@ -111,6 +117,10 @@ proc send*[M](p: Program[M], msg: Msg) =
 proc enqueue[M](p: Program[M], cmd: Cmd) =
   if cmd != nil: p.pending.add cmd
 
+proc suspend[M](p: Program[M])
+  ## Defined with the other terminal operations, below; `handle` intercepts the
+  ## message that reaches it.
+
 proc handle[M](p: Program[M], msg: Msg): bool =
   ## Apply one message. Returns false when the program should stop.
   ##
@@ -119,6 +129,9 @@ proc handle[M](p: Program[M], msg: Msg): bool =
     return false
   if msg of BatchMsg:
     for c in BatchMsg(msg).cmds: p.enqueue c
+    return true
+  if msg of SuspendMsg:
+    p.suspend()
     return true
   if msg of ScheduleMsg:
     p.timers.add ScheduleMsg(msg)
@@ -216,6 +229,7 @@ proc runHeadless*[M](p: Program[M], msgs: openArray[Msg], maxTimers = 256): M =
   ## `after(DurationZero, …)` work slices and low enough that a repeating timer
   ## stops promptly; a test that hits it sees a suspiciously round number rather
   ## than hanging.
+  p.headless = true
   var budget = maxTimers
   p.enqueue p.initCmd
   if not p.drain(): return p.model
@@ -329,6 +343,47 @@ proc syncSize[M](p: Program[M]) =
   p.send WindowSizeMsg(width: size.width, height: size.height,
                        pixelWidth: px.width, pixelHeight: px.height)
 
+proc resumeTerminal[M](p: Program[M]) =
+  ## Take the terminal back after the process was stopped.
+  ##
+  ## A full setup and a `repaint`, never a plain render: a shell has had the
+  ## terminal in the meantime, so nothing the renderer believes is on screen is
+  ## true, and its line diff would skip every line it thinks it already drew.
+  ## `setupTerminal` also re-arms the restore, which is what clears the latch in
+  ## `emergencyRestore` and lets the *next* stop put the terminal back.
+  ##
+  ## `rawModeLost` is not bookkeeping: the handler put the terminal back with
+  ## `tcsetattr` and could not tell the `Tty`, so both `enterRawMode` and
+  ## `armRestore` would take their idempotence guards and do nothing at all.
+  ##
+  ## And it is conditional because a resume does not imply a restore. SIGSTOP
+  ## cannot be caught, so a process stopped that way comes back here with the
+  ## terminal still raw — and clearing the flag then makes `enterRawMode` save
+  ## the *raw* settings as the ones to put back at exit, which hands the shell a
+  ## raw terminal at the end of a run that looked perfect throughout.
+  if restoreHappened(): p.terminal.rawModeLost()
+  p.setupTerminal()
+  p.renderer.repaint()
+  # A window resized while the process was stopped delivers no SIGWINCH that
+  # anything can act on, so the size has to be re-read rather than waited for.
+  # `syncSize` does nothing when it has not changed.
+  p.syncSize()
+
+proc suspend[M](p: Program[M]) =
+  ## Stop the process, and pick up where it left off when it is continued.
+  ##
+  ## The restore is not written here: `kill` runs `tty`'s SIGTSTP handler, which
+  ## does it and then re-raises under the default disposition, so the explicit
+  ## route and an externally delivered stop are one path rather than two that
+  ## have to be kept in agreement. Everything below the `kill` runs on resume.
+  if p.headless: return
+  suspendProcess()
+  # Handled synchronously here, so the flag must not fire again in the loop —
+  # and must be taken rather than left, since a second resume would repaint over
+  # a frame that is already correct.
+  discard takeResumePending()
+  p.resumeTerminal()
+
 proc run*[M](p: Program[M], input = stdin, output = stdout): M =
   ## Take over the terminal and run until a command returns `QuitMsg`.
   ##
@@ -346,6 +401,11 @@ proc run*[M](p: Program[M], input = stdin, output = stdout): M =
   # a feature but repair of damage the library itself does by clearing ECHO and
   # ICANON, and the person who most needs it is the one who did not know to ask.
   watchTerminate()
+  # And unconditional for the same reason again: with `ISIG` cleared, ctrl+z
+  # cannot produce a SIGTSTP, so one that arrives is an explicit `kill` — and its
+  # default action stops the process with the terminal in raw mode, which is the
+  # broken shell `watchTerminate` exists to prevent, reached by another route.
+  watchSuspend()
   p.setupTerminal()
   try:
     # Before the query, before the first size and before `initCmd`: both of those
@@ -383,6 +443,14 @@ proc run*[M](p: Program[M], input = stdin, output = stdout): M =
       let event = p.terminal.waitForInput(
         p.nextTimeoutMs(now, buf.len > 0 and not holding))
       let timedOut = event == ieTimeout
+
+      # Before the resize check, and before the event is looked at: an
+      # externally delivered SIGTSTP breaks the `poll` above with `EINTR`, so
+      # this is the first thing the loop does after being continued and the
+      # terminal is not ours again until it has run. `resumeTerminal` re-reads
+      # the size itself, which is why a resize while stopped needs nothing here.
+      if takeResumePending():
+        p.resumeTerminal()
 
       if takeResizePending():
         p.syncSize()

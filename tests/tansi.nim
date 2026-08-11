@@ -248,6 +248,103 @@ suite "oneLine":
       check oneLine(s).len == s.len             # one byte in, one byte out
       check oneLine(oneLine(s)) == oneLine(s)   # idempotent
 
+suite "expandTabs":
+  ## The one control character that is completely ordinary in the text a pager
+  ## is pointed at, and the only one `oneLine` gives the wrong answer for.
+
+  test "a tab reaches the next stop, not the next column":
+    check expandTabs("a\tb") == "a       b"
+    check expandTabs("\tx") == "        x"
+    check expandTabs("1234567\t|") == "1234567 |"      # one short of a stop
+    check expandTabs("12345678\t|") == "12345678        |"
+
+  test "the stop is a parameter and 8 is the terminal's own":
+    check expandTabs("a\tb", 4) == "a   b"
+    check expandTabs("a\tb", 1) == "a b"
+    check expandTabs("a\tb", DefaultTabStop) == expandTabs("a\tb")
+    # No value means "leave them alone": that is the bug, not a setting.
+    check expandTabs("a\tb", 0) == "a\tb"
+    check expandTabs("a\tb", -3) == "a\tb"
+
+  test "consecutive tabs each get their own stop":
+    check expandTabs("\t\tx", 4) == "        x"
+    check expandTabs("a\t\tb", 4) == "a       b"
+
+  test "text with no tab comes back unchanged":
+    for s in ["", "plain", "日本語", "\e[31mred\e[0m", "a\nb"]:
+      check expandTabs(s) == s
+
+  test "columns are counted the way everything else counts them":
+    # Escapes are no columns and a wide rune is two, so a tab after either lands
+    # where the terminal would put it. Measuring in bytes puts `|` at column 16
+    # in the first case and column 4 in the second.
+    check displayWidth(expandTabs(red & "abc" & reset & "\t|", 4)) == 5
+    check displayWidth(expandTabs("日本\t|", 4)) == 9
+
+  test "the result is as wide as the terminal will draw it, which is the point":
+    # Before measuring, never after: a tab is zero columns to `displayWidth` and
+    # a jump on screen, so the two disagree until this has run.
+    check displayWidth("a\tb") == 2
+    check displayWidth(expandTabs("a\tb")) == 9
+    check expandTabs(expandTabs("a\tb")) == expandTabs("a\tb")
+
+  test "it runs before oneLine, and the other order loses the indentation":
+    # `oneLine` replaces a tab with one space, which is right for a status bar
+    # and wrong for a document — so composing them the wrong way round silently
+    # gives the status-bar answer to both.
+    check oneLine(expandTabs("\tif x:", 4)) == "    if x:"
+    check expandTabs(oneLine("\tif x:"), 4) == " if x:"
+
+suite "columns and runes":
+  ## The two directions of the same map. Both are the loop everybody writes as
+  ## `index`, which is right until a line holds something two columns wide.
+
+  proc rs(s: string): seq[Rune] = s.toRunes
+
+  test "columnOf is where the rune starts, not which rune it is":
+    let r = rs("日本語abc")
+    check columnOf(r, 0) == 0
+    check columnOf(r, 1) == 2
+    check columnOf(r, 3) == 6
+    check columnOf(r, 4) == 7
+
+  test "one past the end is the whole width, and is a legal argument":
+    # Where a cursor sitting after the last character belongs.
+    let r = rs("日本語")
+    check columnOf(r, r.len) == 6
+    check columnOf(r, 99) == 6
+    check columnOf(rs(""), 0) == 0
+
+  test "runeAtColumn rounds onto the rune, never past it":
+    # The middle of a wide rune is not a position; answering with the *next*
+    # rune puts a cursor one character along from the cell it was pointed at.
+    let r = rs("日本語")
+    check runeAtColumn(r, 0) == 0
+    check runeAtColumn(r, 1) == 0
+    check runeAtColumn(r, 2) == 1
+    check runeAtColumn(r, 3) == 1
+    check runeAtColumn(r, 5) == 2
+    check runeAtColumn(r, 6) == 3      # past the end
+
+  test "the two agree wherever a column starts a rune":
+    for s in ["", "plain", "日本語abc", "a日b本c", "→←↑↓", "éx"]:
+      let r = rs(s)
+      checkpoint s
+      for i in 0 .. r.len:
+        # Round-trips exactly, except through a zero-width rune — which starts
+        # at the same column as the one before it, so the map is not injective
+        # there and cannot be.
+        if i == r.len or runeWidth(r[i]) > 0:
+          check runeAtColumn(r, columnOf(r, i)) == i
+      # And the inequality holds everywhere, wide runes included.
+      for c in 0 .. displayWidth(s):
+        check columnOf(r, runeAtColumn(r, c)) <= c
+
+  test "columnOf over the whole thing is displayWidth":
+    for s in ["", "plain", "日本語abc", "🙂 ok", "éx"]:
+      let r = rs(s)
+      check columnOf(r, r.len) == displayWidth(s)
+
 suite "hyperlinks":
   test "a link costs no columns":
     # The whole reason this needs nothing but the helper: `escapeLen` already

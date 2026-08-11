@@ -142,6 +142,18 @@ proc emergencyRestore*() =
     off += n.int
   discard tcsetattr(armedInFd, TCSAFLUSH, addr armedTermios)
 
+proc restoreHappened*(): bool =
+  ## Has `emergencyRestore`_ run since the last `armRestore <#armRestore,Tty,set[TerminalMode]>`_?
+  ##
+  ## The question a resume has to ask, and it has two different answers. Stopped
+  ## by SIGTSTP, the handler put the terminal back and taking it again means
+  ## entering raw mode afresh. Stopped by SIGSTOP — which cannot be caught, so no
+  ## handler ran — the terminal is still exactly as the program left it, and
+  ## "entering raw mode afresh" would save the *raw* settings as the ones to
+  ## restore on exit. That leaves the shell in raw mode at the end of a run that
+  ## did everything else right.
+  restoreDone != 0
+
 proc disarmRestore*() =
   ## Forget the armed state. `exitRawMode <#exitRawMode,Tty>`_ does this, so a
   ## normal exit needs no extra call.
@@ -176,6 +188,114 @@ proc watchTerminate*() =
   ## own handlers there to print a traceback.
   for sig in [SIGTERM, SIGHUP, SIGINT, SIGQUIT]:
     signal(sig, onTerminateSignal)
+
+# --- being stopped and started again ----------------------------------------
+#
+# The other signal the library's own raw mode makes unreachable. `enterRawMode`
+# clears `ISIG`, so ctrl+z never generates a SIGTSTP; one that arrives came from
+# an explicit `kill`, and its default action stops the process with the terminal
+# in raw mode, the alt screen up, the cursor hidden and a mouse reporting. The
+# shell that gets the terminal back then needs `reset`, which is the exact
+# failure `watchTerminate` exists to prevent — so this is repair of damage the
+# library does, on the same argument, and not a feature.
+#
+# It is split across the two handlers because a stop and a resume are not the
+# same kind of event. Stopping happens immediately and cannot wait for the loop,
+# so it restores from the handler like a terminating signal does; resuming has
+# to set a terminal *up*, which is a great deal more than `write(2)` and
+# `tcsetattr`, so it raises a flag like a resize does.
+
+var resumePending {.volatile.}: bool
+
+proc onSuspendSignal(sig: cint) {.noconv.}
+
+proc onContinueSignal(sig: cint) {.noconv.} =
+  # A bare SIGCONT, with no stop of ours in front of it, is not hypothetical:
+  # SIGSTOP cannot be caught, so a process stopped that way is resumed through
+  # here and through nothing else. The terminal was never restored in that
+  # case — see `restoreHappened`_, which is how the resume tells the two apart.
+  resumePending = true
+
+proc onSuspendSignal(sig: cint) {.noconv.} =
+  # `onTerminateSignal`'s shape, and the same reasoning about why a flag would be
+  # too late: the terminal is in raw mode during the startup query, during
+  # `initCmd` and during any slow command. The difference is that this one comes
+  # back, so the latch inside `emergencyRestore` has to be cleared before the
+  # next stop — `armRestore` does that, and `setupTerminal` calls it on resume.
+  emergencyRestore()
+
+  # Unblocked across the re-raise, and this is the whole of why a stop handler is
+  # harder than a terminate one. A handler runs with its own signal blocked, so
+  # the re-raise below would merely become *pending* and would not be delivered
+  # until this returns — by which point the disposition has been put back and the
+  # process re-enters this handler instead of stopping. That is not a delayed
+  # stop but an unbounded loop, and it looks from outside exactly like a program
+  # that ignores ctrl+z. Unblocking makes the raise stop the process here, on
+  # this line, which is what everything below assumes.
+  #
+  # `sigemptyset`, `sigaddset`, `sigprocmask` and `kill` are all on POSIX's
+  # async-signal-safe list, as `write` and `tcsetattr` are.
+  var mask, prev: Sigset
+  discard sigemptyset(mask)
+  discard sigaddset(mask, SIGTSTP)
+  signal(SIGTSTP, SIG_DFL)
+  discard sigprocmask(SIG_UNBLOCK, mask, prev)
+  discard kill(getpid(), SIGTSTP)
+  discard sigprocmask(SIG_BLOCK, mask, prev)
+
+  # Reached two ways, and the second one is why the flag is set here rather than
+  # only in `onContinueSignal`. Either the process stopped and was continued, or
+  # **the stop never happened**: the kernel discards a stop signal sent to an
+  # orphaned process group, precisely so nothing can be left stopped with no
+  # parent able to continue it. A program run from a job-control shell is never
+  # in one; a program whose shell has since exited, or one under a bare
+  # `pty.fork` with no intervening process group, is. Without this the terminal
+  # has been handed back, the program is still running, and no SIGCONT is ever
+  # coming to say so.
+  #
+  # Also where the handler is put back, for the same reason it had to be taken
+  # down at all — and safely, now that the raise above has already happened
+  # rather than being left pending.
+  signal(SIGTSTP, onSuspendSignal)
+  resumePending = true
+
+proc watchSuspend*() =
+  ## Install the SIGTSTP and SIGCONT handlers. Idempotent, and a sibling of
+  ## `watchTerminate`_ in every respect.
+  signal(SIGTSTP, onSuspendSignal)
+  signal(SIGCONT, onContinueSignal)
+  resumePending = false
+
+proc rawModeLost*(t: var Tty) =
+  ## Record that something outside this object put the terminal back.
+  ##
+  ## There is exactly one such thing: `onSuspendSignal` above, which calls
+  ## `tcsetattr` directly because a handler cannot reach a `Tty`. Without this,
+  ## `enterRawMode`'s idempotence guard sees `inRawMode` still set and taking the
+  ## terminal again on resume is a *silent no-op* — the program carries on
+  ## drawing frames to a cooked terminal, which echoes every keystroke back over
+  ## them and needs no signal, no error and no failed syscall to happen.
+  ## `armRestore` is guarded on the same flag, so the next stop would also find
+  ## nothing armed.
+  t.inRawMode = false
+
+proc suspendProcess*() =
+  ## Stop this process, returning when it is continued.
+  ##
+  ## Here rather than at the caller for the reason every other syscall in this
+  ## module is: `program` names no platform primitive, so a port replaces this
+  ## file and nothing else. It deliberately does not restore the terminal —
+  ## `onSuspendSignal` above is reached by this `kill` and does that, so the
+  ## explicit route and an externally delivered stop are one path instead of two
+  ## that could come to disagree.
+  discard kill(getpid(), SIGTSTP)
+
+proc takeResumePending*(): bool =
+  ## True if the process was continued since the last call, clearing the flag.
+  ## The caller owes the terminal a full setup and a repaint: a shell has been
+  ## drawing on it, so nothing the renderer believes about the screen is true.
+  result = resumePending
+  resumePending = false
 
 proc initTty*(input = stdin, output = stdout): Tty =
   Tty(input: input, output: output)
