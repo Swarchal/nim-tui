@@ -6,8 +6,9 @@
 ## leaving the terminal in raw mode — try navigating into /proc/1 or /root.
 ##
 ## Also shows: scrolling viewport with a scrollbar, a split layout that
-## reflows on resize, and derived state (the preview) refreshed by a command
-## whenever the selection moves.
+## reflows on resize, derived state (the preview) refreshed by a command
+## whenever the selection moves, and `execCmd` — `e` hands the terminal to
+## `$EDITOR` and takes it back when that exits.
 ##
 ##   nim c -r --path:src examples/filebrowser.nim
 
@@ -32,6 +33,11 @@ type
     lines: seq[string]
 
   ClearStatusMsg = ref object of Msg
+
+  EditedMsg = ref object of Msg
+    ## `$EDITOR` has exited. Its own message rather than a `Cmd`, because
+    ## `execCmd`'s continuation returns a `Msg` — the command that produced it
+    ## has already run.
 
   Model = object
     cwd: string
@@ -164,6 +170,11 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
     result[0].statusIsError = true
     result[1] = after(initDuration(seconds = 4), ClearStatusMsg())
 
+  elif msg of EditedMsg:
+    # Reload rather than trust: whatever ran may have renamed, deleted or
+    # created files, and the preview on screen is of the version from before.
+    result[1] = loadDir(m.cwd, m.showHidden)
+
   elif msg of ClearStatusMsg:
     result[0].status = ""
     result[0].statusIsError = false
@@ -191,6 +202,20 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
       result[0].showHidden = not m.showHidden
       result[1] = loadDir(m.cwd, result[0].showHidden)
     of "~": result[1] = loadDir(getHomeDir(), m.showHidden)
+    of "e":
+      # `execCmd`: the terminal goes back to a cooked state, the editor gets it,
+      # and the runtime takes it back and repaints when the editor exits. The
+      # loop is single-threaded and commands are already synchronous, so a child
+      # process needs no machinery — it is a very long command.
+      #
+      # The directory is reloaded rather than trusted afterwards, since the file
+      # may have been renamed, deleted or created by whatever ran.
+      let sel = m.selectedPath
+      if sel.len > 0 and not m.selected.isDir:
+        result[1] = execCmd(getEnv("EDITOR", "vi"), [sel],
+                            proc (r: ExecResult): Msg =
+                              if r.error != nil: ErrorMsg(error: r.error)
+                              else: EditedMsg())
     else: discard
 
 # --- view ---------------------------------------------------------------------
@@ -267,7 +292,7 @@ proc view(m: Model): string =
                       m.previewPane(m.size.width - listWidth, bodyHeight)])
 
   let status =
-    if m.status.len == 0: hints({"j/k": "move", "enter": "open",
+    if m.status.len == 0: hints({"j/k": "move", "enter": "open", "e": "edit",
                                  "h": "up", ".": "hidden", "q": "quit"})
     elif m.statusIsError: Style().fg(rgb(255, 110, 110)).bold().render("✗ " & m.status)
     else: Style().faint().render(m.status)

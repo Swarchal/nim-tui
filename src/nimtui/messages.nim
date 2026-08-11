@@ -129,6 +129,28 @@ type
     dueAt*: MonoTime
     payload*: Msg
 
+  ExecResult* = object
+    ## How an `execCmd`_ turned out.
+    code*: int
+      ## The child's exit status, 128 plus the signal that killed it, or `-1`
+      ## when it never ran — which `error` then explains.
+    error*: ref CatchableError
+      ## Set only when the child could not be *started*: a missing binary, a
+      ## fork that failed. A child that ran and exited non-zero is not an error
+      ## here, because whether it is one is the application's question — `git
+      ## commit` exiting 1 means the user changed their mind.
+
+  ExecDone* = proc (r: ExecResult): Msg {.closure.}
+    ## What to send once the child is finished. May return `nil`.
+
+  ExecMsg* = ref object of Msg
+    ## Internal: hand the terminal to another program, wait for it, and take it
+    ## back. Produced by `execCmd`_, intercepted by the runtime, and never
+    ## forwarded to `update`.
+    command*: string
+    args*: seq[string]
+    then*: ExecDone
+
   SuspendMsg* = ref object of Msg
     ## Internal: stop the process the way ctrl+z stops one that is not in raw
     ## mode. Produced by `suspendCmd`_, intercepted by the runtime, and never
@@ -146,6 +168,35 @@ type
 proc quitCmd*(): Cmd =
   ## Command that stops the program.
   result = proc (): Msg = QuitMsg()
+
+proc execCmd*(command: string, args: openArray[string] = [],
+              then: ExecDone = nil): Cmd =
+  ## Command that puts the terminal back, runs `command` on it, and takes the
+  ## terminal again when it exits — `$EDITOR`, `git`, `less`, anything that wants
+  ## the screen to itself.
+  ##
+  ## ```nim
+  ## execCmd(getEnv("EDITOR", "vi"), [path], proc (r: ExecResult): Msg =
+  ##   if r.error != nil: ErrorMsg(error: r.error) else: ReloadMsg())
+  ## ```
+  ##
+  ## No new machinery in the loop and no concurrency: the loop is single-threaded
+  ## and commands already run synchronously between updates, so a child process
+  ## is just a very long command. Nothing is delivered and nothing is drawn until
+  ## it exits, which is the correct behaviour rather than a limitation — the
+  ## child owns the screen for that whole time.
+  ##
+  ## `then` is where the answer goes, since a command's own return value has
+  ## already been consumed producing this message. If it is `nil` and the child
+  ## could not be started, an `ErrorMsg`_ is delivered instead, so a typo in a
+  ## binary name is never silent.
+  ##
+  ## Under `runHeadless` no child is run — there is no terminal to hand over, and
+  ## a test suite is not a thing that should be spawning editors. `then` is still
+  ## called, with an `error` saying so, so a state machine waiting on it carries
+  ## on rather than stalling.
+  let a = @args
+  result = proc (): Msg = ExecMsg(command: command, args: a, then: then)
 
 proc suspendCmd*(): Cmd =
   ## Command that suspends the program, as ctrl+z does for a program that is not

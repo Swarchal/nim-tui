@@ -1,4 +1,8 @@
-"""Kill a program that owns the terminal, and see what state it leaves behind.
+"""Every way a program stops owning the terminal, and what state it leaves it in.
+
+Killed, stopped with ctrl+z, or handing it to a child process — three routes out
+of raw mode, and the assertions are largely the same ones because the failure is:
+the terminal is left in a state its next user cannot work in.
 
     python3 tests/manual/signals.py [-v]
 
@@ -202,6 +206,47 @@ def case(name, sig, modes, expect):
           % signal.Signals(sig).name)
 
 
+def spawn_job(modes):
+    """Start the fixture the way a job control shell would, under a pty.
+
+    Two forks. A `pty.fork` child is a session leader, so its process group has
+    no parent process in the same session — it is *orphaned*, and the kernel
+    discards stop signals sent to an orphaned process group. Under a plain
+    `pty.fork` the fixture never stops at all, and a suspend case measures
+    nothing while every assertion in it passes.
+
+    So the pty child plays the shell: it forks the program into a process group
+    of its own and hands it the terminal with `tcsetpgrp`, which is what job
+    control is and the only arrangement in which ctrl+z means anything. The
+    driver is then a grandparent and cannot `waitpid`, so the pty child reports
+    the final status down a pipe.
+
+    Returns (pty_child_pid, master_fd, program_pid, pipe_reader). The reader
+    yields the program's pid first and its wait status once it exits.
+    """
+    r_fd, w_fd = os.pipe()
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.close(r_fd)
+        os.environ["TERM"] = "xterm-256color"
+        gpid = os.fork()
+        if gpid == 0:
+            os.close(w_fd)
+            os.setpgid(0, 0)
+            # Handing the terminal to a background process group raises SIGTTOU
+            # at the process doing the handing, which is this one.
+            signal.signal(signal.SIGTTOU, signal.SIG_IGN)
+            os.tcsetpgrp(0, os.getpgid(0))
+            os.execv(PROG, [PROG] + modes)
+        os.write(w_fd, b"%d\n" % gpid)
+        _, st = os.waitpid(gpid, 0)
+        os.write(w_fd, b"%d\n" % st)
+        os._exit(0)
+    os.close(w_fd)
+    reader = os.fdopen(r_fd)
+    return pid, fd, int(reader.readline()), reader
+
+
 def process_state(pid):
     """The single-letter state from /proc: `T` is stopped, `R`/`S` running.
 
@@ -249,28 +294,7 @@ def play_suspend(modes, via_key, sig=signal.SIGTSTP):
 
     Returns a dict of the buffer slices and the tty state at each step.
     """
-    r_fd, w_fd = os.pipe()
-    pid, fd = pty.fork()
-    if pid == 0:
-        os.close(r_fd)
-        os.environ["TERM"] = "xterm-256color"
-        gpid = os.fork()
-        if gpid == 0:
-            os.close(w_fd)
-            os.setpgid(0, 0)
-            # Handing the terminal to a background process group raises SIGTTOU
-            # at the process doing the handing, which is this one.
-            signal.signal(signal.SIGTTOU, signal.SIG_IGN)
-            os.tcsetpgrp(0, os.getpgid(0))
-            os.execv(PROG, [PROG] + modes)
-        os.write(w_fd, b"%d\n" % gpid)
-        _, st = os.waitpid(gpid, 0)
-        os.write(w_fd, b"%d\n" % st)
-        os._exit(0)
-    os.close(w_fd)
-
-    reader = os.fdopen(r_fd)
-    gpid = int(reader.readline())
+    pid, fd, gpid, reader = spawn_job(modes)
 
     buf = b""
 
@@ -333,6 +357,122 @@ def play_suspend(modes, via_key, sig=signal.SIGTSTP):
         for k in ("tail1", "resume1", "tail2", "tail_final"):
             print("    %s: %s" % (k, repr(out[k])))
     return out
+
+
+def play_exec(child, modes, interrupt=None, key=b"e"):
+    """Press the key that runs a child, and watch the terminal change hands.
+
+    `interrupt` is a signal to send *while the child is running*, which is where
+    the policy lives: those keys belong to the child for its lifetime, so a
+    parent that acts on them is drawing over a screen it does not own.
+
+    Returns a dict of the buffer slices and the tty state at each step.
+    """
+    pid, fd, gpid, reader = spawn_job(modes + ["exec:" + child])
+    buf = b""
+
+    def drain(seconds):
+        nonlocal buf
+        until = time.time() + seconds
+        while time.time() < until:
+            r, _, _ = select.select([fd], [], [], 0.05)
+            if not r:
+                continue
+            try:
+                chunk = os.read(fd, 65536)
+            except OSError:
+                return
+            if not chunk:
+                return
+            buf += chunk
+
+    drain(1.0)
+    out = {"raw_running": termios.tcgetattr(fd)}
+
+    mark = len(buf)
+    os.write(fd, key)
+    # Long enough to be inside the child, for the cases whose child sleeps.
+    time.sleep(0.4)
+    out["attrs_child"] = termios.tcgetattr(fd)
+    out["state_child"] = process_state(gpid)
+
+    if interrupt is not None:
+        os.kill(gpid, interrupt)
+        time.sleep(0.4)
+        out["state_interrupted"] = process_state(gpid)
+        if interrupt == signal.SIGTSTP:
+            os.kill(gpid, signal.SIGCONT)
+
+    drain(2.5)
+    out["during"] = buf[mark:]
+    out["attrs_after"] = termios.tcgetattr(fd)
+    out["alive"] = process_state(gpid) not in ("?", "Z")
+
+    mark = len(buf)
+    os.kill(gpid, signal.SIGTERM)
+    drain(1.0)
+    out["status"] = int(reader.readline())
+    out["attrs_final"] = termios.tcgetattr(fd)
+    os.waitpid(pid, 0)
+    reader.close()
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+    if VERBOSE:
+        print("    while and after the child: " + repr(out["during"]))
+    return out
+
+
+def exec_case(name, child, modes, expect_in_output, key=b"e"):
+    print("%s:" % name)
+    r = play_exec(child, modes, key=key)
+
+    check(not cooked(r["raw_running"]), "  the program had the terminal in raw mode")
+
+    # The handover. Not sampled from here with `tcgetattr`: these children finish
+    # in milliseconds, so any poll of the driver's is a race it usually loses.
+    # The first case has the child report its own terminal instead, which is
+    # better evidence anyway — from inside, on the fd it was handed.
+    check(EXIT_ALT in r["during"], "  the alt screen is left before the child runs")
+    check(ENABLE_WRAP in r["during"], "  and auto-wrap is turned back on for it")
+
+    for label, text in expect_in_output:
+        check(text in r["during"], "  " + label)
+
+    # And the taking back, which is `resumeTerminal` — the same proc a resume
+    # from ctrl+z uses, which is most of why this was cheap to add.
+    check(not cooked(r["attrs_after"]), "  raw mode is retaken when the child exits")
+    check(ENTER_ALT in r["during"], "  the alt screen is re-entered")
+    check(b"holding the terminal" in r["during"], "  and the frame is redrawn")
+
+    check(cooked(r["attrs_final"]), "  ECHO and ICANON are back on at exit")
+    check(os.WIFSIGNALED(r["status"]) and os.WTERMSIG(r["status"]) == signal.SIGTERM,
+          "  and the exit status is still honest")
+
+
+def exec_signal_case(name, sig, expect_stopped):
+    """A signal arriving while the child owns the terminal."""
+    print("%s:" % name)
+    r = play_exec("sleep 1.5", ["alt", "cursor"], interrupt=sig)
+
+    check(r["state_child"] in ("S", "R"), "  the program is waiting on the child")
+    # Sampled mid-child for real here, the child being one that sleeps.
+    check(cooked(r["attrs_child"]),
+          "  the child holds a cooked terminal while it runs")
+    if expect_stopped:
+        # Ctrl+z should background the whole job: the child inherits the
+        # program's process group, so the terminal signals both.
+        check(r["state_interrupted"] == "T",
+              "  the whole job stops, rather than only one half of it")
+    else:
+        check(r["state_interrupted"] in ("S", "R"),
+              "  the program does not die on a key that belongs to the child")
+
+    check(r["alive"], "  the program is still running afterwards")
+    check(not cooked(r["attrs_after"]), "  and has the terminal back in raw mode")
+    check(b"child exited 0" in r["during"], "  the child ran to completion")
+    check(cooked(r["attrs_final"]), "  ECHO and ICANON are back on at exit")
 
 
 def stopped_case(name, modes):
@@ -446,6 +586,29 @@ def split_case(name, sig, modes, expect):
 suspend_case("stopped from outside", ["alt", "cursor", "mouse"], via_key=False)
 suspend_case("suspended by the program itself", ["alt", "cursor"], via_key=True)
 stopped_case("stopped with SIGSTOP, which no handler sees", ["alt", "cursor"])
+
+exec_case("handing the terminal to a child", "stty -a | tr '\\n' ' '",
+          ["alt", "cursor"],
+          [("the child sees echo on", b" echo"),
+           ("the child sees canonical mode on", b" icanon"),
+           ("the exit status comes back", b"child exited 0")])
+
+exec_case("a child that fails is not an error, and says so", "exit 3",
+          ["alt"], [("its exit code is reported as it stands", b"child exited 3")])
+
+# `x` runs a binary that does not exist and passes no `then`, which is the one
+# path where a failure has nowhere to go but `ErrorMsg` — and the one that would
+# otherwise be a program that flickered and did nothing.
+exec_case("a binary that does not exist becomes an ErrorMsg", "true", ["alt"],
+          [("the failure is reported", b"error: nimtui-no-such-binary")],
+          key=b"x")
+
+# ISIG is back on while the child has the terminal, so both of these reach the
+# whole foreground process group — the child and the program alike.
+exec_signal_case("interrupted while the child owns the screen",
+                 signal.SIGINT, expect_stopped=False)
+exec_signal_case("ctrl+z while the child owns the screen",
+                 signal.SIGTSTP, expect_stopped=True)
 
 split_case("input and output on different ttys", signal.SIGTERM,
            ["alt", "cursor", "mouse"],

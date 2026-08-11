@@ -1,4 +1,4 @@
-import std/[unittest, times, unicode, options]
+import std/[unittest, times, unicode, options, strutils]
 import nimtui
 
 ## `runHeadless` drives the same update/command machinery as `run` without a
@@ -146,6 +146,47 @@ suite "suspending":
     # a stopped test suite.
     let m = prog().runHeadless(@[Msg(key("z")), Msg(key("x"))])
     check m.log == @["z", "x"]
+
+suite "running another program":
+  ## The intercept and the headless refusal. Whether the terminal actually
+  ## changes hands is `tests/manual/signals.py`'s, which is the only place it
+  ## can be: it needs a pty, a process group and a real child.
+
+  test "execCmd produces an ExecMsg carrying the command":
+    let msg = execCmd("git", ["commit", "-v"])()
+    check msg of ExecMsg
+    check ExecMsg(msg).command == "git"
+    check ExecMsg(msg).args == @["commit", "-v"]
+
+  test "an ExecMsg is not forwarded to update":
+    # Runtime bookkeeping, like QuitMsg and SuspendMsg. A `then` returning nil,
+    # so that what update sees is only what update should see — with no `then`
+    # the refusal below arrives as an ErrorMsg, which *is* forwarded and is a
+    # different claim.
+    let quiet = execCmd("true", [], proc (r: ExecResult): Msg = nil)
+    let m = prog().runHeadless(@[Msg(quiet()), Msg(key("x"))])
+    check m.log == @["x"]
+
+  test "headless runs no child but still answers":
+    # Not silence: a state machine waiting on `then` would otherwise stall, and
+    # the test would look like the program had hung rather than like the runtime
+    # had declined. The refusal itself is the point — a test suite is not a thing
+    # that should be spawning editors.
+    var got: ExecResult
+    var called = false
+    let cmd = execCmd("true", [], proc (r: ExecResult): Msg =
+      got = r
+      called = true
+      nil)
+    discard prog().runHeadless(@[Msg(cmd())])
+    check called
+    check got.code == -1
+    check got.error != nil
+
+  test "and with no continuation the refusal arrives as an ErrorMsg":
+    let m = prog().runHeadless(@[Msg(ExecMsg(command: "true"))])
+    check m.log.len == 1
+    check m.log[0].startsWith "error: "
 
 suite "timers":
   test "scheduled messages are delivered":

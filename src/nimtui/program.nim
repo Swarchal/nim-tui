@@ -118,8 +118,9 @@ proc enqueue[M](p: Program[M], cmd: Cmd) =
   if cmd != nil: p.pending.add cmd
 
 proc suspend[M](p: Program[M])
-  ## Defined with the other terminal operations, below; `handle` intercepts the
-  ## message that reaches it.
+proc exec[M](p: Program[M], msg: ExecMsg)
+  ## Both defined with the other terminal operations, below; `handle` intercepts
+  ## the messages that reach them.
 
 proc handle[M](p: Program[M], msg: Msg): bool =
   ## Apply one message. Returns false when the program should stop.
@@ -132,6 +133,9 @@ proc handle[M](p: Program[M], msg: Msg): bool =
     return true
   if msg of SuspendMsg:
     p.suspend()
+    return true
+  if msg of ExecMsg:
+    p.exec ExecMsg(msg)
     return true
   if msg of ScheduleMsg:
     p.timers.add ScheduleMsg(msg)
@@ -368,6 +372,39 @@ proc resumeTerminal[M](p: Program[M]) =
   # anything can act on, so the size has to be re-read rather than waited for.
   # `syncSize` does nothing when it has not changed.
   p.syncSize()
+
+proc exec[M](p: Program[M], msg: ExecMsg) =
+  ## Hand the terminal to another program and take it back when it exits.
+  ##
+  ## The teardown is the *normal* one, not the handler's: this is an ordinary
+  ## return of the terminal with the loop running, so `renderer.finish` gets to
+  ## decide about the trailing newline the way it does at exit. And it means
+  ## `exitRawMode` runs, which clears `inRawMode` properly — so unlike a resume
+  ## from a stop, nothing has to tell the `Tty` what happened behind its back.
+  var res = ExecResult(code: -1)
+  if p.headless:
+    res.error = newException(IOError,
+      "runHeadless does not run child processes: " & msg.command)
+  else:
+    p.restoreTerminal()
+    ignoreJobSignals()
+    try:
+      res.code = p.terminal.runChild(msg.command, msg.args)
+    except CatchableError as e:
+      res.error = e
+    finally:
+      # Before the terminal comes back, so a signal arriving in the gap finds a
+      # handler that knows what state things are in.
+      watchTerminate()
+      watchSuspend()
+      p.resumeTerminal()
+
+  if msg.then != nil:
+    p.send msg.then(res)
+  elif res.error != nil:
+    # Never silent: a mistyped binary name would otherwise look like a program
+    # that flickered and did nothing.
+    p.send ErrorMsg(error: res.error)
 
 proc suspend[M](p: Program[M]) =
   ## Stop the process, and pick up where it left off when it is continued.

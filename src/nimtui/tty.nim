@@ -266,6 +266,106 @@ proc watchSuspend*() =
   signal(SIGCONT, onContinueSignal)
   resumePending = false
 
+# --- handing the terminal to another program --------------------------------
+
+proc ignoreJobSignals*() =
+  ## Stand out of the way of a child process that has been given the terminal.
+  ##
+  ## `SIGINT` and `SIGQUIT` are ignored, which is what POSIX requires of
+  ## `system(3)` and for the same reason: those keys now belong to the child, and
+  ## a parent that dies on them leaves the child running with a terminal nobody
+  ## owns. `watchTerminate`_'s handler would also write teardown escapes over a
+  ## screen the child is drawing on.
+  ##
+  ## `SIGTSTP` and `SIGCONT` go back to the *default* rather than being ignored,
+  ## which is the difference between the two pairs. Ctrl+z during someone's
+  ## `$EDITOR` should background the whole job, and it does: the child inherits
+  ## this process group, so the terminal signals both, both stop, and `fg` brings
+  ## both back. What must not happen is `watchSuspend`_'s handler running —
+  ## restoring a terminal it does not hold, and setting one up again on resume
+  ## while the child is still drawing.
+  ##
+  ## Undone by calling `watchTerminate`_ and `watchSuspend`_ again, which is what
+  ## the caller that installed them should do. Kept as a pair of calls rather
+  ## than a saved-and-restored disposition because Nim's `signal` returns
+  ## nothing, and because the two handlers are this library's own to reinstate.
+  signal(SIGINT, SIG_IGN)
+  signal(SIGQUIT, SIG_IGN)
+  signal(SIGTSTP, SIG_DFL)
+  signal(SIGCONT, SIG_DFL)
+  resumePending = false
+
+proc runChild*(t: Tty, command: string, args: openArray[string]): int =
+  ## Run `command` with this program's own terminal on its standard streams, and
+  ## wait for it. Returns its exit status, or 128 plus the signal that killed it.
+  ##
+  ## Raises `OSError` if the child could not be started at all — which is a
+  ## different thing from a child that ran and failed, and the caller almost
+  ## always wants to tell them apart. Getting that answer across a `fork` needs
+  ## the pipe below: the failure happens in the child, after this proc has
+  ## already returned in the parent.
+  ##
+  ## `t.input` and `t.output` rather than this process's own fds 0 and 1, for the
+  ## reason `armRestore` keeps two of them: `run` takes input and output as two
+  ## parameters and they need not be the same device. A child given the wrong one
+  ## draws its editor onto a terminal nobody is looking at.
+  ##
+  ## The caller is responsible for putting the terminal back into a state fit to
+  ## hand over — cooked, off the alt screen, cursor showing — and for
+  ## `ignoreJobSignals`_. This does the `fork`, and nothing about policy.
+  let
+    inFd = t.input.getFileHandle()
+    outFd = t.output.getFileHandle()
+  # Built before the fork: between `fork` and `exec` only async-signal-safe
+  # calls are allowed, and allocating is emphatically not one of them.
+  var argv = allocCStringArray(@[command] & @args)
+  defer: deallocCStringArray(argv)
+
+  var fds: array[2, cint]
+  if pipe(fds) != 0:
+    raise newException(OSError, "pipe failed: " & $strerror(errno))
+  # Close-on-exec, so a *successful* exec closes the write end and the parent's
+  # read below returns end-of-file. Nothing has to be sent to report success.
+  discard fcntl(fds[1], F_SETFD, FD_CLOEXEC)
+
+  let pid = fork()
+  if pid < 0:
+    discard close(fds[0])
+    discard close(fds[1])
+    raise newException(OSError, "fork failed: " & $strerror(errno))
+
+  if pid == 0:
+    discard close(fds[0])
+    discard dup2(inFd, 0)
+    discard dup2(outFd, 1)
+    discard dup2(outFd, 2)
+    # An *ignored* disposition survives exec, where a caught one does not — so
+    # these two, and only these two, have to be undone or the child starts with
+    # ctrl+c doing nothing.
+    signal(SIGINT, SIG_DFL)
+    signal(SIGQUIT, SIG_DFL)
+    discard execvp(command, argv)
+    var err = errno
+    discard write(fds[1], addr err, sizeof(err))
+    exitnow(127)
+
+  discard close(fds[1])
+  var childErrno: cint = 0
+  discard read(fds[0], addr childErrno, sizeof(childErrno))
+  discard close(fds[0])
+
+  var status: cint
+  # A signal caught here — SIGWINCH is the likely one, and it stays installed
+  # throughout — makes `waitpid` fail with EINTR rather than reaping anything.
+  while waitpid(pid, status, 0) < 0:
+    if errno != EINTR:
+      raise newException(OSError, "waitpid failed: " & $strerror(errno))
+
+  if childErrno != 0:
+    raise newException(OSError, command & ": " & $strerror(childErrno))
+  if WIFEXITED(status): WEXITSTATUS(status).int
+  else: 128 + WTERMSIG(status).int
+
 proc rawModeLost*(t: var Tty) =
   ## Record that something outside this object put the terminal back.
   ##

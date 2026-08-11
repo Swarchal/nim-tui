@@ -55,19 +55,26 @@ Messages the runtime produces: `KeyMsg`, `MouseMsg`, `WindowSizeMsg`,
 is usually the most convenient thing to `case` on.
 
 Commands: `quitCmd()`, `msgCmd(m)`, `batch(a, b, …)`, `after(duration, msg)`,
-`tick(duration)`. Return `nil` for no effect. Repeating work re-issues `tick`
-from `update` each time it fires.
+`tick(duration)`, `execCmd(command, args, then)`, `suspendCmd()`. Return `nil`
+for no effect. Repeating work re-issues `tick` from `update` each time it fires.
 
 Options are passed to `newProgram`: `poAltScreen`, `poHideCursor`,
 `poMouseCellMotion`, `poMouseAllMotion`.
 
-The terminal is put back on the way out of every exit the library can see: a
-normal return, an exception, a terminating signal, and ctrl+z. That last one is
-two halves. A `SIGTSTP` arriving from outside is handled unconditionally, because
-its default action would stop the process with the terminal in raw mode and hand
-the shell back unusable; binding ctrl+z *itself* is `suspendCmd()`, and is the
-application's call, since raw mode clears `ISIG` and ctrl+z reaches `update` as
-an ordinary key.
+The terminal is put back on every way out the library can see: a normal return,
+an exception, a terminating signal, ctrl+z, and handing it to another program.
+
+`execCmd("git", ["commit"], then)` restores the terminal, runs the child on it,
+and takes it back and repaints when the child exits — `$EDITOR`, a pager,
+anything wanting the screen. `then` receives the exit code, or an error if the
+child could not be started at all. No concurrency: commands already run
+synchronously between updates, so a child process is just a very long one.
+
+Ctrl+z is two halves. A `SIGTSTP` arriving from outside is handled
+unconditionally, because its default action would stop the process with the
+terminal in raw mode and hand the shell back unusable; binding ctrl+z *itself* is
+`suspendCmd()`, and is the application's call, since raw mode clears `ISIG` and
+ctrl+z reaches `update` as an ordinary key.
 
 ## Building a view
 
@@ -126,7 +133,7 @@ Then the ones that exercise the runtime properly:
 
 | | What it is really about |
 | --- | --- |
-| `filebrowser` | IO inside commands. A command that raises becomes an `ErrorMsg`, so an unreadable directory shows up on the status line instead of unwinding the loop — try `./bin/filebrowser /root`. Also: scrolling viewport, split panes that drop the preview below 80 columns |
+| `filebrowser` | IO inside commands. A command that raises becomes an `ErrorMsg`, so an unreadable directory shows up on the status line instead of unwinding the loop — try `./bin/filebrowser /root`. Also: scrolling viewport, split panes that drop the preview below 80 columns, and `e` to open the selection in `$EDITOR` via `execCmd` |
 | `todo` | A model with modes. `update` dispatches on `m.mode` before the key, which is what stops a text field swallowing `q`. Also: live filtering where the cursor tracks the filtered list, and flash messages that expire via `after` |
 | `dashboard` | Three concurrent timers at different rates (90ms spinner, 400ms sample, 1.2s log), each re-arming itself, none blocking the others. Also: a 2x2 grid that collapses to one column when narrow |
 | `snake` | A game loop whose tick rate changes with the score. Ticks are stamped with a generation so stale ones are dropped rather than double-stepping, and turns are buffered until the step so mashing keys cannot fold the snake into itself |
@@ -213,9 +220,6 @@ Not yet done, in rough order of how much is missing:
 * **An editable multi-line buffer.** `TextArea` is read-only and `TextInput` is
   one line; `examples/vim.nim` shows what an application currently has to own
   itself between them.
-* **Running an external program.** No `execCmd` yet, so a program cannot hand the
-  terminal to `$EDITOR` or to `git` and take it back. Suspend, the other half of
-  that pair, is done.
 * **Windows support.** `src/nimtui/tty.nim` is POSIX and fails to compile
   elsewhere by design; it is the only module a port needs to replace.
 

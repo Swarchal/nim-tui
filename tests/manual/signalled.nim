@@ -17,7 +17,9 @@
 ##
 ## Typing `z` at it returns `suspendCmd()`, which is the explicit half of the
 ## suspend work; an externally delivered SIGTSTP is the other half and needs
-## nothing here.
+## nothing here. `e` runs `sh -c` on whatever `exec:<cmd>` gave it and reports
+## the result in the view; `x` runs a binary that does not exist, which is the
+## path where the failure has no `then` to go to and becomes an `ErrorMsg`.
 ##
 ## It renders a line and then waits. That matters for the assertion about the
 ## trailing newline: the scrollback path emits one only when a block is on
@@ -30,8 +32,18 @@
 import std/[os, strutils]
 import nimtui
 
-type Model = object
-  ticks: int
+var
+  options: set[ProgramOption]
+  outPath = ""
+  childCommand = "true"
+
+type
+  Model = object
+    ticks: int
+    note: string          ## what the last child did, for the driver to read
+
+  DoneMsg = ref object of Msg
+    r: ExecResult
 
 proc update(m: Model, msg: Msg): (Model, Cmd) =
   result = (m, nil)
@@ -42,15 +54,29 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
   # ISIG cleared, ctrl+z is an ordinary key and binding it is the application's
   # decision, so what the driver has to exercise is a program *choosing* to
   # suspend. The route from here is identical either way.
-  elif msg of KeyMsg and $KeyMsg(msg) == "z":
-    result[1] = suspendCmd()
+  elif msg of DoneMsg:
+    let r = DoneMsg(msg).r
+    result[0].note =
+      if r.error != nil: "child failed: " & r.error.msg.splitLines[0]
+      else: "child exited " & $r.code
+  elif msg of ErrorMsg:
+    # Where a child that could not be started lands when no `then` was given.
+    result[0].note = "error: " & ErrorMsg(msg).error.msg.splitLines[0]
+  elif msg of KeyMsg:
+    case $KeyMsg(msg)
+    of "z": result[1] = suspendCmd()
+    of "e":
+      result[1] = execCmd("sh", ["-c", childCommand],
+                          proc (r: ExecResult): Msg = DoneMsg(r: r))
+    of "x":
+      # No `then`, and a binary that does not exist: the ErrorMsg path.
+      result[1] = execCmd("nimtui-no-such-binary")
+    else: discard
 
 proc view(m: Model): string =
-  "holding the terminal, tick " & $m.ticks
+  "holding the terminal, tick " & $m.ticks & "\n" &
+    (if m.note.len > 0: "note: " & m.note else: "note: none")
 
-var
-  options: set[ProgramOption]
-  outPath = ""
 for i in 1 .. paramCount():
   let arg = paramStr(i)
   case arg
@@ -63,6 +89,7 @@ for i in 1 .. paramCount():
   of "focus": options.incl poFocusReporting
   else:
     if arg.startsWith("out:"): outPath = arg[4 .. ^1]
+    elif arg.startsWith("exec:"): childCommand = arg[5 .. ^1]
     else: quit("unknown mode: " & arg)
 
 let program = newProgram(Model(), update, view, options = options,
