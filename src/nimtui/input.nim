@@ -331,7 +331,22 @@ proc parseOne(buf: string, i: int, flushEsc: bool, flushPaste: bool):
   else:
     let n = utf8SeqLen(b)
     if n == 0: return (nil, 1)                  # invalid leading byte: skip
-    if i + n > buf.len: return (nil, 0)         # rune split across reads
+    # Every byte that has arrived where a continuation byte belongs has to be
+    # one. If it is not, the sequence is malformed *now* rather than incomplete,
+    # and waiting for the rest is waiting for something that cannot arrive —
+    # while the bytes behind it, which are perfectly good input, are held with
+    # it. `\xF3\e[A` is the case that matters: a truncated lead byte in front of
+    # a real arrow key.
+    for k in i + 1 ..< min(i + n, buf.len):
+      if (buf[k].ord and 0xC0) != 0x80: return (nil, 1)
+    if i + n > buf.len:
+      # Genuinely cut short by the end of the buffer, so the rest may still be
+      # coming — hold, exactly as an incomplete escape sequence is held. Except
+      # on a flush, where the read has already timed out and nothing more is
+      # coming: then this is the `ESC` `[` `q` stall in a different place, and
+      # the same answer applies. Consume the leading byte and no more, leaving
+      # what follows to decode as itself rather than being swallowed with it.
+      return (nil, if flushEsc: 1 else: 0)
     var j = i
     var r: Rune
     fastRuneAt(buf, j, r, true)
