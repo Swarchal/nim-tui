@@ -100,25 +100,24 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
     result[1] = tickCmd()
 
   elif msg of KeyMsg:
-    case $KeyMsg(msg)
-    of "q", "ctrl+c": result[1] = quitCmd()
-    of "up", "k": result[0].sel = max(m.sel - 1, 0)
-    of "down", "j": result[0].sel = min(m.sel + 1, m.series.high)
-    of "g":
+    let k = KeyMsg(msg)
+    if k.matches("q", "ctrl+c"): result[1] = quitCmd()
+    elif k.matches("up", "k"): result[0].sel = max(m.sel - 1, 0)
+    elif k.matches("down", "j"): result[0].sel = min(m.sel + 1, m.series.high)
+    elif k.matches("g"):
       # Wraps, so the key needs no counterpart and the enum can grow.
       result[0].glyphs = PlotGlyphs((m.glyphs.ord + 1) mod (PlotGlyphs.high.ord + 1))
-    of "+", "=": result[0].rows = min(m.rows + 1, 16)
-    of "-": result[0].rows = max(m.rows - 1, 1)
-    of "s": result[0].fixedScale = not m.fixedScale
-    of "c": result[0].colour = not m.colour
-    of "space", "p": result[0].paused = not m.paused
-    of "r":
+    elif k.matches("+", "="): result[0].rows = min(m.rows + 1, 16)
+    elif k.matches("-"): result[0].rows = max(m.rows - 1, 1)
+    elif k.matches("s"): result[0].fixedScale = not m.fixedScale
+    elif k.matches("c"): result[0].colour = not m.colour
+    elif k.matches("space", "p"): result[0].paused = not m.paused
+    elif k.matches("r"):
       # Empties the history rather than refilling it: both widgets pad on the
       # left when there are fewer values than columns, so this is how to see a
       # trace grow rightwards instead of being drawn as a full window.
       for i in 0 .. result[0].series.high: result[0].series[i].values.setLen 0
       result[0].n = 0
-    else: discard
 
 # --- drawing ------------------------------------------------------------------
 #

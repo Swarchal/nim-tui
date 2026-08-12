@@ -307,37 +307,36 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
       result[0].at = 0
       result[0].lastAt = getMonoTime()
 
-    case $KeyMsg(msg)
-    of "q", "ctrl+c": result[1] = quitCmd()
-    of "tab", "right":
+    let k = KeyMsg(msg)
+    if k.matches("q", "ctrl+c"): result[1] = quitCmd()
+    elif k.matches("tab", "right"):
       result[0].scene = Scene((m.scene.ord + 1) mod (Scene.high.ord + 1))
       reset()
-    of "shift+tab", "left":
+    elif k.matches("shift+tab", "left"):
       result[0].scene = Scene((m.scene.ord + Scene.high.ord) mod
                               (Scene.high.ord + 1))
       reset()
-    of "1":
+    elif k.matches("1"):
       result[0].scene = scPlasma
       reset()
-    of "2":
+    elif k.matches("2"):
       result[0].scene = scFirehose
       reset()
-    of "3":
+    elif k.matches("3"):
       result[0].scene = scStill
       reset()
-    of "space", "p": result[0].paused = not m.paused
-    of "g": result[0].palette = (m.palette + 1) mod RampNames.len
-    of "c": result[0].depth = (m.depth + 1) mod DepthNames.len
-    of "-", "_":
+    elif k.matches("space", "p"): result[0].paused = not m.paused
+    elif k.matches("g"): result[0].palette = (m.palette + 1) mod RampNames.len
+    elif k.matches("c"): result[0].depth = (m.depth + 1) mod DepthNames.len
+    elif k.matches("-", "_"):
       result[0].cap = min(m.cap + 1, FpsCaps.high)
       reset()
-    of "+", "=":
+    elif k.matches("+", "="):
       result[0].cap = max(m.cap - 1, 0)
       reset()
-    of "]": result[0].rate = min(m.rate * 2, 64)
-    of "[": result[0].rate = max(m.rate div 2, 1)
-    of "r": reset()
-    else: discard
+    elif k.matches("]"): result[0].rate = min(m.rate * 2, 64)
+    elif k.matches("["): result[0].rate = max(m.rate div 2, 1)
+    elif k.matches("r"): reset()
 
 # --- view ---------------------------------------------------------------------
 

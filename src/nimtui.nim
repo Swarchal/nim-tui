@@ -15,11 +15,9 @@
 ##   result = (m, nil)
 ##   if msg of KeyMsg:
 ##     let k = KeyMsg(msg)
-##     case $k
-##     of "q", "ctrl+c": result[1] = quitCmd()
-##     of "up": result[0].count.inc
-##     of "down": result[0].count.dec
-##     else: discard
+##     if k.matches("q", "ctrl+c"): result[1] = quitCmd()
+##     elif k.matches("up"): result[0].count.inc
+##     elif k.matches("down"): result[0].count.dec
 ##
 ## proc view(m: Model): string =
 ##   "count: " & $m.count & "\n(up/down to change, q to quit)"

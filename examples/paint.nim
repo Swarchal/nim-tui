@@ -132,28 +132,30 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
       result[0].erasing = false
 
   elif msg of KeyMsg:
-    case $KeyMsg(msg)
-    of "q", "ctrl+c": result[1] = quitCmd()
-    of "c":
+    let k = KeyMsg(msg)
+    if k.matches("q", "ctrl+c"): result[1] = quitCmd()
+    elif k.matches("c"):
       result[0].clear()
       result[0].status = "cleared"
-    of "g":
+    elif k.matches("g"):
       result[0].gradientIdx = (m.gradientIdx + 1) mod m.gradients.len
       result[0].reshade()
       result[0].status = "palette " & $(result[0].gradientIdx + 1)
-    of "[":
+    elif k.matches("["):
       result[0].brush = max(m.brush - 1, 1)
       result[0].status = &"brush {result[0].brush}"
-    of "]":
+    elif k.matches("]"):
       result[0].brush = min(m.brush + 1, 6)
       result[0].status = &"brush {result[0].brush}"
-    else:
-      let k = $KeyMsg(msg)
-      if k.len == 1 and k[0] in '1' .. '9':
-        let idx = k[0].ord - '1'.ord
-        if idx < m.palette.len:
-          result[0].current = idx
-          result[0].status = &"colour {idx + 1}"
+    elif k.key == kRune and k.mods == {} and k.rune.int32 in '1'.int32 .. '9'.int32:
+      # The one binding here `matches` cannot express: it takes literals, and a
+      # *range* of keys is not a list of them. Reading the rune is what to do
+      # when the key is an argument rather than a command — nine `of` branches
+      # differing only in the digit would be the worse spelling either way.
+      let idx = int(k.rune.int32 - '1'.int32)
+      if idx < m.palette.len:
+        result[0].current = idx
+        result[0].status = &"colour {idx + 1}"
 
 # --- view ---------------------------------------------------------------------
 

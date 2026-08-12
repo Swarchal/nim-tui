@@ -189,21 +189,20 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
     result[1] = tickCmd()
 
   elif msg of KeyMsg:
-    case $KeyMsg(msg)
-    of "q", "ctrl+c": result[1] = quitCmd()
-    of "up", "k": result[0].sel = max(m.sel - 1, 0)
-    of "down", "j": result[0].sel = min(m.sel + 1, m.series.high)
-    of "s": result[0].fixedScale = not m.fixedScale
-    of "c": result[0].colour = not m.colour
-    of "space", "p": result[0].paused = not m.paused
-    of "r":
+    let k = KeyMsg(msg)
+    if k.matches("q", "ctrl+c"): result[1] = quitCmd()
+    elif k.matches("up", "k"): result[0].sel = max(m.sel - 1, 0)
+    elif k.matches("down", "j"): result[0].sel = min(m.sel + 1, m.series.high)
+    elif k.matches("s"): result[0].fixedScale = not m.fixedScale
+    elif k.matches("c"): result[0].colour = not m.colour
+    elif k.matches("space", "p"): result[0].paused = not m.paused
+    elif k.matches("r"):
       # Empties the history rather than refilling it, so the lines grow
       # rightwards out of the left padding — `sparkline` pads on the left when
       # there are fewer values than columns, which is what stops a young series
       # from being drawn as though it were a full window.
       for i in 0 .. result[0].series.high: result[0].series[i].values.setLen 0
       result[0].n = 0
-    else: discard
 
 # --- view ---------------------------------------------------------------------
 

@@ -215,21 +215,20 @@ proc handleKey*(ta: var TextArea, k: KeyMsg): bool =
   ## caller can treat it as its own — the same contract as `TextInput.handleKey
   ## <textinput.html#handleKey,TextInput,KeyMsg>`_.
   result = true
-  case $k
-  of "up", "k": ta.scrollBy(-1)
-  of "down", "j": ta.scrollBy(1)
-  of "pgup", "ctrl+b": ta.pageUp()
-  of "pgdown", "ctrl+f": ta.pageDown()
-  of "ctrl+u": ta.halfPageUp()
-  of "ctrl+d": ta.halfPageDown()
-  of "home", "g": ta.toTop()
-  of "end", "G": ta.toBottom()
-  of "left":
+  if k.matches("up", "k"): ta.scrollBy(-1)
+  elif k.matches("down", "j"): ta.scrollBy(1)
+  elif k.matches("pgup", "ctrl+b"): ta.pageUp()
+  elif k.matches("pgdown", "ctrl+f"): ta.pageDown()
+  elif k.matches("ctrl+u"): ta.halfPageUp()
+  elif k.matches("ctrl+d"): ta.halfPageDown()
+  elif k.matches("home", "g"): ta.toTop()
+  elif k.matches("end", "G"): ta.toBottom()
+  elif k.matches("left"):
     # Only when not wrapping: with wrapping on there is nothing off-screen to
     # the right, so the key belongs to the application.
     if not ta.wrap and ta.xOffset > 0: dec ta.xOffset
     else: result = false
-  of "right":
+  elif k.matches("right"):
     if not ta.wrap: inc ta.xOffset
     else: result = false
   else: result = false

@@ -147,7 +147,7 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
     # underneath cannot be driven blind.
     if m.showHelp:
       result[0].showHelp = false
-      if $k in ["q", "ctrl+c"]: result[1] = quitCmd()
+      if k.matches("q", "ctrl+c"): result[1] = quitCmd()
       return
 
     # Offer the key to the focused component first, and only treat it as a
@@ -160,23 +160,21 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
       if result[0].list.handleKey(k, m.items.len): return
     else: discard
 
-    case $k
-    of "q", "ctrl+c": result[1] = quitCmd()
-    of "?": result[0].showHelp = true
-    of "tab", "l":
+    if k.matches("q", "ctrl+c"): result[1] = quitCmd()
+    elif k.matches("?"): result[0].showHelp = true
+    elif k.matches("tab", "l"):
       result[0].tab = Tab((ord(m.tab) + 1) mod (ord(Tab.high) + 1))
       result[0].layout()
-    of "shift+tab", "h":
+    elif k.matches("shift+tab", "h"):
       result[0].tab = Tab((ord(m.tab) + ord(Tab.high)) mod (ord(Tab.high) + 1))
       result[0].layout()
-    of "t":
+    elif k.matches("t"):
       result[0].themeIndex = (m.themeIndex + 1) mod Themes.len
-    of "1": result[0].tab = tMetrics
-    of "2": result[0].tab = tTable
-    of "3": result[0].tab = tLogs
-    of "4": result[0].tab = tList
-    of "5": result[0].tab = tDisplay
-    else: discard
+    elif k.matches("1"): result[0].tab = tMetrics
+    elif k.matches("2"): result[0].tab = tTable
+    elif k.matches("3"): result[0].tab = tLogs
+    elif k.matches("4"): result[0].tab = tList
+    elif k.matches("5"): result[0].tab = tDisplay
 
 # --- view ---------------------------------------------------------------------
 

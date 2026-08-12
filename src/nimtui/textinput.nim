@@ -123,26 +123,25 @@ proc handleKey*(ti: var TextInput, k: KeyMsg): bool =
   ## Apply an editing key. Returns false if the key means nothing here, so the
   ## caller can treat it as its own (enter to submit, esc to cancel, ...).
   result = true
-  case $k
-  of "left": ti.cursor = max(ti.cursor - 1, 0)
-  of "right": ti.cursor = min(ti.cursor + 1, ti.runes.len)
-  of "home", "ctrl+a": ti.cursor = 0
-  of "end", "ctrl+e": ti.cursor = ti.runes.len
-  of "alt+left", "ctrl+left": ti.cursor = ti.wordLeft
-  of "alt+right", "ctrl+right": ti.cursor = ti.wordRight
-  of "backspace":
+  if k.matches("left"): ti.cursor = max(ti.cursor - 1, 0)
+  elif k.matches("right"): ti.cursor = min(ti.cursor + 1, ti.runes.len)
+  elif k.matches("home", "ctrl+a"): ti.cursor = 0
+  elif k.matches("end", "ctrl+e"): ti.cursor = ti.runes.len
+  elif k.matches("alt+left", "ctrl+left"): ti.cursor = ti.wordLeft
+  elif k.matches("alt+right", "ctrl+right"): ti.cursor = ti.wordRight
+  elif k.matches("backspace"):
     if ti.cursor > 0:
       ti.runes.delete(ti.cursor - 1)
       ti.cursor.dec
-  of "delete":
+  elif k.matches("delete"):
     if ti.cursor < ti.runes.len: ti.runes.delete(ti.cursor)
-  of "ctrl+w": ti.deleteWordBefore()
-  of "ctrl+u":
+  elif k.matches("ctrl+w"): ti.deleteWordBefore()
+  elif k.matches("ctrl+u"):
     ti.runes.delete(0 ..< ti.cursor)
     ti.cursor = 0
-  of "ctrl+k":
+  elif k.matches("ctrl+k"):
     ti.runes.setLen ti.cursor
-  of "space": ti.insert Rune(' ')
+  elif k.matches("space"): ti.insert Rune(' ')
   else:
     # Only bare (or shifted) printable runes are text; ctrl/alt combinations are
     # commands belonging to the application.

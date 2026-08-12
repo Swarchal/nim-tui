@@ -63,15 +63,14 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
     # Where a child that could not be started lands when no `then` was given.
     result[0].note = "error: " & ErrorMsg(msg).error.msg.splitLines[0]
   elif msg of KeyMsg:
-    case $KeyMsg(msg)
-    of "z": result[1] = suspendCmd()
-    of "e":
+    let k = KeyMsg(msg)
+    if k.matches("z"): result[1] = suspendCmd()
+    elif k.matches("e"):
       result[1] = execCmd("sh", ["-c", childCommand],
                           proc (r: ExecResult): Msg = DoneMsg(r: r))
-    of "x":
+    elif k.matches("x"):
       # No `then`, and a binary that does not exist: the ErrorMsg path.
       result[1] = execCmd("nimtui-no-such-binary")
-    else: discard
 
 proc view(m: Model): string =
   "holding the terminal, tick " & $m.ticks & "\n" &

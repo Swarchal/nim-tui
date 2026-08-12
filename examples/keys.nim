@@ -28,7 +28,7 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
   if msg of KeyMsg:
     let k = KeyMsg(msg)
     result[0].push "key   " & $k & "  (key=" & $k.key & " mods=" & $k.mods & ")"
-    if $k in ["q", "ctrl+c"]:
+    if k.matches("q", "ctrl+c"):
       result[1] = quitCmd()
   elif msg of MouseMsg:
     let e = MouseMsg(msg)

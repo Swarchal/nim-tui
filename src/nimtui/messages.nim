@@ -8,7 +8,7 @@
 ## `Msg` it returns back through `update`, which is how effects re-enter the
 ## pure part of the program. Returning `nil` means "no follow-up message".
 
-import std/[monotimes, times, unicode, strutils]
+import std/[monotimes, times, unicode, strutils, macros]
 import ./color
 
 # MonoTime and Duration appear in the public message types, so callers need
@@ -268,3 +268,156 @@ proc `$`*(k: KeyMsg): string =
   if mShift in k.mods and k.key != kShiftTab: parts.add "shift"
   parts.add(if k.key == kRune: $k.rune else: keyName(k.key))
   parts.join("+")
+
+type
+  KeySpec = object
+    ## What a `KeyMsg` has to hold to match a spec. Built at compile time by
+    ## `parseKeySpec` and spliced into the call site by `matches`_, so it never
+    ## exists at run time as a value.
+    key: Key
+    rune: int32
+      ## The rune as its codepoint rather than as a `Rune`, and only because
+      ## `macros.newLit` cannot build one: `Rune` is `distinct int32`, which
+      ## every `newLit` overload declines. Meaningless unless `key` is `kRune`.
+    mods: set[Modifier]
+
+const ModifierNames = [("ctrl", mCtrl), ("alt", mAlt), ("shift", mShift)]
+
+proc matchesSpec(k: KeyMsg, key: Key, rune: int32,
+                 mods: set[Modifier]): bool {.inline.} =
+  ## The whole of the run-time cost of `matches`_: a nil check and three
+  ## comparisons against literals, with no allocation anywhere — against the
+  ## `seq[string]` and the `join` that `$` builds on every keypress.
+  ##
+  ## `rune` is consulted only for `kRune`, which is not an optimisation but a
+  ## correctness point — `input` reports the space bar as `kSpace` *carrying*
+  ## `Rune(' ')`, so a `KeySpec` for `space` (rune 0) would never match one if
+  ## the field were compared unconditionally.
+  k != nil and k.key == key and k.mods == mods and
+    (key != kRune or k.rune.int32 == rune)
+
+proc parseKeySpec(spec: string): tuple[parsed: KeySpec, err: string] =
+  ## Turn `"ctrl+alt+delete"` into what a matching `KeyMsg` holds. Returns the
+  ## reason instead when there is no such key, which `matches`_ then reports as
+  ## a compile error against the offending literal.
+  ##
+  ## Modifier words are eaten from the front one `word+` at a time and whatever
+  ## is left is the key name, taken whole. Splitting on `'+'` instead looks
+  ## simpler and cannot express the plus key: `$k` renders that as `"+"` and
+  ## ctrl+plus as `"ctrl++"`, both of which this reads correctly because only
+  ## the *prefixes* are split off.
+  var mods: set[Modifier]
+  var i = 0
+  while i < spec.len:
+    var found = false
+    for (word, m) in ModifierNames:
+      if spec.len > i + word.len and spec[i + word.len] == '+' and
+         spec[i ..< i + word.len] == word:
+        if m in mods:
+          return (KeySpec(), "modifier '" & word & "' given twice")
+        mods.incl m
+        i += word.len + 1
+        found = true
+        break
+    if not found: break                         # the rest of it is the key name
+
+  let name = spec[i .. ^1]
+  if name.len == 0:
+    return (KeySpec(), if i == 0: "empty key spec"
+                       else: "ends with a modifier and names no key")
+
+  # The name table is derived from `keyName` rather than written out again, so
+  # the two cannot come to disagree and a key added to the enum is bindable by
+  # the name it already prints as. `kShiftTab` is in it and unreachable through
+  # it — its name contains the `'+'` the loop above has already eaten — which is
+  # what the fixup below is for.
+  for k in Key:
+    if keyName(k) == name:
+      if k in {kNone, kRune}:
+        return (KeySpec(), "\"" & name & "\" is how `$` prints a key of that " &
+                           "kind, not a key: no `KeyMsg` is ever equal to it")
+      var key = k
+      if k == kTab and mShift in mods: key = kShiftTab
+      return (KeySpec(key: key, mods: mods), "")
+
+  if name.runeLen == 1:
+    let r = name.runeAt(0).int32
+    if r == ' '.int32:
+      return (KeySpec(), "the space bar is `kSpace`, not a rune: write \"space\"")
+    # The next three are all the legacy encoding folding shift into the
+    # character itself, so each names a key no terminal reports and each would
+    # sit there never firing. Revisit them with the kitty keyboard protocol,
+    # which sends the base key and the modifiers separately and so can produce
+    # the first two.
+    if mShift in mods and mCtrl in mods:
+      return (KeySpec(), "the legacy encoding cannot represent ctrl+shift with " &
+                         "a character — it has one control code per letter and " &
+                         "no bit left for shift")
+    if mShift in mods:
+      let hint = if r in 'a'.int32 .. 'z'.int32: " (\"" & $Rune(r - 32) & "\")"
+                 else: ""
+      return (KeySpec(), "shift is folded into the rune by the legacy " &
+                         "encoding: write the shifted character itself" & hint)
+    if r in 'A'.int32 .. 'Z'.int32 and mCtrl in mods:
+      return (KeySpec(), "a control character decodes to its lower-case " &
+                         "letter: write \"ctrl+" & $Rune(r + 32) & "\"")
+    return (KeySpec(key: kRune, rune: r, mods: mods), "")
+
+  # A `'+'` still in the name means the word in front of it was meant as a
+  # modifier and is not one of the three — `"Ctrl+c"`, `"meta+x"` — which is
+  # worth saying, since "no key is named Ctrl+c" describes the symptom rather
+  # than the mistake.
+  let plus = name.find('+')
+  if plus > 0:
+    return (KeySpec(), "\"" & name[0 ..< plus] & "\" is not a modifier; the " &
+                       "three are ctrl, alt and shift, all lower case")
+  (KeySpec(), "no key is named \"" & name & "\"")
+
+macro matches*(k: KeyMsg, specs: varargs[untyped]): bool =
+  ## True when `k` is any of the given keys, named exactly as `$` prints
+  ## them — `"q"`, `"ctrl+c"`, `"alt+up"`, `"f5"`, `"shift+tab"`.
+  ##
+  ## ```nim
+  ## if k.matches("up", "k", "ctrl+p"): m.cursor.dec
+  ## elif k.matches("q", "ctrl+c"): result[1] = quitCmd()
+  ## ```
+  ##
+  ## This is the `case $k` idiom with the two things wrong with it removed. It
+  ## allocates nothing, where `$` builds a `seq[string]` and joins it on every
+  ## keypress; and **a spec that names no key is a compile error** rather than a
+  ## branch that silently never runs. `"pgdn"`, `"escape"` and `"ctrl+W"` are all
+  ## rejected with the spelling that was meant — they are wrong in a way no test
+  ## catches short of exercising that exact key, which is the whole reason for
+  ## reading the string at compile time.
+  ##
+  ## The specs must be string literals, since a spec that is not there to read
+  ## when the program is compiled cannot be checked. There is deliberately no
+  ## run-time form: it would be `$k == spec`, which is what this exists to
+  ## replace. `$` itself stays for logging and for showing a user what they
+  ## pressed.
+  ##
+  ## Modifiers may be given in any order; `$` prints them ctrl, alt, shift. What
+  ## is checked is that the spec names a key that can be *spelled*, not that this
+  ## terminal can send it — `"ctrl+esc"` parses and no legacy terminal reports it.
+  if specs.len == 0:
+    error("matches needs at least one key spec", k)
+
+  # `k` is bound once and shared. It is usually a symbol, but `KeyMsg(msg)` is
+  # the other idiomatic spelling and splicing that into every alternative would
+  # repeat the conversion per spec.
+  let key = genSym(nskLet, "key")
+  var test: NimNode
+  for s in specs:
+    if s.kind notin {nnkStrLit, nnkRStrLit, nnkTripleStrLit}:
+      error("matches takes string literals, so that a key spec that names " &
+            "nothing is caught here rather than never firing", s)
+    let (parsed, err) = parseKeySpec(s.strVal)
+    if err.len > 0:
+      error("bad key spec \"" & s.strVal & "\": " & err, s)
+    let one = newCall(bindSym"matchesSpec", (if specs.len == 1: k else: key),
+                      newLit(parsed.key), newLit(parsed.rune),
+                      newLit(parsed.mods))
+    test = if test == nil: one else: infix(test, "or", one)
+
+  result = if specs.len == 1: test
+           else: newStmtList(newLetStmt(key, k), test).newBlockStmt

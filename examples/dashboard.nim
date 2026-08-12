@@ -102,16 +102,15 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
     result[1] = logTick()
 
   elif msg of KeyMsg:
-    case $KeyMsg(msg)
-    of "q", "ctrl+c": result[1] = quitCmd()
-    of "space", "p": result[0].paused = not m.paused
-    of "r":
+    let k = KeyMsg(msg)
+    if k.matches("q", "ctrl+c"): result[1] = quitCmd()
+    elif k.matches("space", "p"): result[0].paused = not m.paused
+    elif k.matches("r"):
       for i in 0 .. result[0].series.high:
         result[0].series[i].values.setLen 0
       result[0].logs.setLen 0
       result[0].samples = 0
       result[0].started = getMonoTime()
-    else: discard
 
 # --- view ---------------------------------------------------------------------
 

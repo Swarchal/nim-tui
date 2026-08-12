@@ -123,18 +123,16 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
   elif msg of KeyMsg:
     let k = KeyMsg(msg)
     if result[0].list.handleKey(k, m.log.len): return
-    case $k
-    of "q", "ctrl+c": result[1] = quitCmd()
-    of "space", "p":
+    if k.matches("q", "ctrl+c"): result[1] = quitCmd()
+    elif k.matches("space", "p"):
       if m.done < Total:
         result[0].running = not m.running
         # Resuming restarts the chain; pausing simply lets it stop, because the
         # `not running` branch above returns without re-issuing.
         if result[0].running: result[1] = workCmd(m.gen)
-    of "r":
+    elif k.matches("r"):
       result[0].restart()
       result[1] = workCmd(result[0].gen)
-    else: discard
 
 # --- view ---------------------------------------------------------------------
 

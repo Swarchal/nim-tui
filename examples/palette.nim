@@ -64,11 +64,10 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
   result = (m, nil)
   discard result[0].size.handleResize(msg)
   if msg of KeyMsg:
-    case $KeyMsg(msg)
-    of "q", "ctrl+c": result[1] = quitCmd()
-    of "h", "space": result[0].half = not m.half
-    of "t": result[0].themeIndex = (m.themeIndex + 1) mod Themes.len
-    else: discard
+    let k = KeyMsg(msg)
+    if k.matches("q", "ctrl+c"): result[1] = quitCmd()
+    elif k.matches("h", "space"): result[0].half = not m.half
+    elif k.matches("t"): result[0].themeIndex = (m.themeIndex + 1) mod Themes.len
 
 # --- drawing ------------------------------------------------------------------
 

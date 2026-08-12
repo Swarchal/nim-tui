@@ -7,8 +7,7 @@
 ##
 ## ```nim
 ## if m.fields[m.focus].input.handleKey(k): return   # it was text
-## case $k                                           # it was a command
-## of "tab": ...
+## if k.matches("tab"): ...                          # it was a command
 ## ```
 ##
 ## Also shows `TextInput`'s `mask`, on the password field: it changes what
@@ -99,7 +98,7 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
 
     if m.submitted:
       # The confirmation is modal, so it swallows everything.
-      if $k in ["q", "ctrl+c"]: result[1] = quitCmd()
+      if k.matches("q", "ctrl+c"): result[1] = quitCmd()
       else: result[0].submitted = false
       return
 
@@ -109,12 +108,10 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
       result[0].revalidate()
       return
 
-    case $k
-    of "ctrl+c": result[1] = quitCmd()
-    of "esc": result[1] = quitCmd()
-    of "tab", "down", "ctrl+n": result[0].moveFocus 1
-    of "shift+tab", "up", "ctrl+p": result[0].moveFocus(-1)
-    of "enter":
+    if k.matches("ctrl+c", "esc"): result[1] = quitCmd()
+    elif k.matches("tab", "down", "ctrl+n"): result[0].moveFocus 1
+    elif k.matches("shift+tab", "up", "ctrl+p"): result[0].moveFocus(-1)
+    elif k.matches("enter"):
       result[0].revalidate()
       if result[0].focus == m.fields.high:
         # Submitting an invalid form moves to the first offending field rather
@@ -127,7 +124,6 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
               result[0].focus = i
               break
       else: result[0].moveFocus 1
-    else: discard
 
 # --- view ---------------------------------------------------------------------
 

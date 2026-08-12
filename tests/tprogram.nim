@@ -29,13 +29,11 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
   elif msg of KeyMsg:
     let k = KeyMsg(msg)
     result[0].log.add $k
-    case $k
-    of "q": result[1] = quitCmd()
-    of "a": result[1] = msgCmd(AddMsg(delta: 1))
-    of "b": result[1] = batch(msgCmd(AddMsg(delta: 2)), msgCmd(PingMsg()))
-    of "t": result[1] = tick(initDuration(milliseconds = 5))
-    of "z": result[1] = suspendCmd()
-    else: discard
+    if k.matches("q"): result[1] = quitCmd()
+    elif k.matches("a"): result[1] = msgCmd(AddMsg(delta: 1))
+    elif k.matches("b"): result[1] = batch(msgCmd(AddMsg(delta: 2)), msgCmd(PingMsg()))
+    elif k.matches("t"): result[1] = tick(initDuration(milliseconds = 5))
+    elif k.matches("z"): result[1] = suspendCmd()
   elif msg of ErrorMsg:
     result[0].log.add "error: " & ErrorMsg(msg).error.msg
   elif msg of WindowSizeMsg:
@@ -316,7 +314,7 @@ proc sizedUpdate(m: Sized, msg: Msg): (Sized, Cmd) =
   result = (m, nil)
   if result[0].size.handleResize(msg):
     result[0].reflows.inc                 # what the new size invalidated
-  elif msg of KeyMsg and $KeyMsg(msg) == "q":
+  elif msg of KeyMsg and KeyMsg(msg).matches("q"):
     result[1] = quitCmd()
 
 suite "the resize branch as one line":

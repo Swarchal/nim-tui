@@ -10,12 +10,11 @@ type Model = object
 proc update(m: Model, msg: Msg): (Model, Cmd) =
   result = (m, nil)
   if msg of KeyMsg:
-    case $KeyMsg(msg)
-    of "q", "ctrl+c", "esc": result[1] = quitCmd()
-    of "up", "k", "+": result[0].count.inc
-    of "down", "j", "-": result[0].count.dec
-    of "r": result[0].count = 0
-    else: discard
+    let k = KeyMsg(msg)
+    if k.matches("q", "ctrl+c", "esc"): result[1] = quitCmd()
+    elif k.matches("up", "k", "+"): result[0].count.inc
+    elif k.matches("down", "j", "-"): result[0].count.dec
+    elif k.matches("r"): result[0].count = 0
 
 proc view(m: Model): string =
   let big = Style().bold().fg(rgb(120, 200, 255))

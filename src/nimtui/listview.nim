@@ -87,13 +87,12 @@ proc handleKey*(l: var ListView, k: KeyMsg, total: int): bool =
   ## enter, delete and the rest stay the application's — the same contract as
   ## `TextInput.handleKey <textinput.html#handleKey,TextInput,KeyMsg>`_.
   result = true
-  case $k
-  of "up", "k", "ctrl+p": l.up total
-  of "down", "j", "ctrl+n": l.down total
-  of "pgup", "ctrl+b": l.pageUp total
-  of "pgdown", "ctrl+f": l.pageDown total
-  of "home", "g": l.toTop total
-  of "end", "G": l.toBottom total
+  if k.matches("up", "k", "ctrl+p"): l.up total
+  elif k.matches("down", "j", "ctrl+n"): l.down total
+  elif k.matches("pgup", "ctrl+b"): l.pageUp total
+  elif k.matches("pgdown", "ctrl+f"): l.pageDown total
+  elif k.matches("home", "g"): l.toTop total
+  elif k.matches("end", "G"): l.toBottom total
   else: result = false
 
 proc render*(l: ListView, items: openArray[string], width: int,

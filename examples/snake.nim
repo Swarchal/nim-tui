@@ -151,20 +151,19 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
       result[1] = result[0].scheduleStep()
 
   elif msg of KeyMsg:
-    case $KeyMsg(msg)
-    of "q", "ctrl+c": result[1] = quitCmd()
-    of "up", "k", "w": result[0].queued.add dUp
-    of "down", "j", "s": result[0].queued.add dDown
-    of "left", "h", "a": result[0].queued.add dLeft
-    of "right", "l", "d": result[0].queued.add dRight
-    of "space", "p":
+    let k = KeyMsg(msg)
+    if k.matches("q", "ctrl+c"): result[1] = quitCmd()
+    elif k.matches("up", "k", "w"): result[0].queued.add dUp
+    elif k.matches("down", "j", "s"): result[0].queued.add dDown
+    elif k.matches("left", "h", "a"): result[0].queued.add dLeft
+    elif k.matches("right", "l", "d"): result[0].queued.add dRight
+    elif k.matches("space", "p"):
       if m.phase == pPlaying: result[0].phase = pPaused
       elif m.phase == pPaused: result[0].phase = pPlaying
-    of "r", "enter":
+    elif k.matches("r", "enter"):
       if m.phase == pOver or m.phase == pPaused:
         result[0].reset()
         result[1] = result[0].scheduleStep()
-    else: discard
 
 # --- view ---------------------------------------------------------------------
 

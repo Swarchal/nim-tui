@@ -98,56 +98,54 @@ proc commitInput(m: var Model): Cmd =
 
 proc handleNormalKey(m: var Model, k: KeyMsg): Cmd =
   let idx = m.realIndex
-  case $k
-  of "q", "ctrl+c": return quitCmd()
-  of "down", "j":
+  if k.matches("q", "ctrl+c"): return quitCmd()
+  elif k.matches("down", "j"):
     m.cursor.inc
     m.clampCursor()
-  of "up", "k":
+  elif k.matches("up", "k"):
     m.cursor = max(m.cursor - 1, 0)
     m.clampCursor()
-  of "g": m.cursor = 0; m.clampCursor()
-  of "G": m.cursor = m.visibleIndices.len; m.clampCursor()
-  of "space", "enter", "x":
+  elif k.matches("g"): m.cursor = 0; m.clampCursor()
+  elif k.matches("G"): m.cursor = m.visibleIndices.len; m.clampCursor()
+  elif k.matches("space", "enter", "x"):
     if idx >= 0:
       m.tasks[idx].done = not m.tasks[idx].done
-  of "a", "n":
+  elif k.matches("a", "n"):
     m.mode = mAdding
     m.input = initTextInput("what needs doing?")
-  of "e":
+  elif k.matches("e"):
     if idx >= 0:
       m.mode = mEditing
       m.input = initTextInput()
       m.input.text = m.tasks[idx].title
-  of "d":
+  elif k.matches("d"):
     if idx >= 0:
       let title = m.tasks[idx].title
       m.tasks.delete idx
       m.clampCursor()
       return m.flash("deleted " & title.elide(24))
-  of "J":                                   # reorder down
+  elif k.matches("J"):                      # reorder down
     if idx >= 0 and idx < m.tasks.high:
       swap m.tasks[idx], m.tasks[idx + 1]
       m.cursor.inc
       m.clampCursor()
-  of "K":                                   # reorder up
+  elif k.matches("K"):                      # reorder up
     if idx > 0:
       swap m.tasks[idx], m.tasks[idx - 1]
       m.cursor = max(m.cursor - 1, 0)
       m.clampCursor()
-  of "c":
+  elif k.matches("c"):
     let before = m.tasks.len
     m.tasks.keepItIf(not it.done)
     m.clampCursor()
     return m.flash($(before - m.tasks.len) & " completed cleared")
-  of "/":
+  elif k.matches("/"):
     m.mode = mFiltering
-  of "esc":
+  elif k.matches("esc"):
     if not m.filter.isEmpty:
       m.filter.clear()
       m.clampCursor()
       return m.flash("filter cleared")
-  else: discard
 
 proc update(m: Model, msg: Msg): (Model, Cmd) =
   result = (m, nil)
@@ -177,20 +175,18 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
     of mNormal:
       result[1] = result[0].handleNormalKey(k)
     of mAdding, mEditing:
-      case $k
-      of "enter": result[1] = result[0].commitInput()
-      of "esc":
+      if k.matches("enter"): result[1] = result[0].commitInput()
+      elif k.matches("esc"):
         result[0].input.clear()
         result[0].mode = mNormal
-      of "ctrl+c": result[1] = quitCmd()
+      elif k.matches("ctrl+c"): result[1] = quitCmd()
       else:
         discard result[0].input.handleKey(k)
     of mFiltering:
-      case $k
-      of "enter", "esc":
+      if k.matches("enter", "esc"):
         result[0].mode = mNormal
         result[0].clampCursor()
-      of "ctrl+c": result[1] = quitCmd()
+      elif k.matches("ctrl+c"): result[1] = quitCmd()
       else:
         if result[0].filter.handleKey(k):
           result[0].cursor = 0

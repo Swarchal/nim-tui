@@ -187,22 +187,22 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
     else: discard
 
   elif msg of KeyMsg:
-    case $KeyMsg(msg)
-    of "q", "ctrl+c": result[1] = quitCmd()
-    of "down", "j": result[1] = result[0].move(1)
-    of "up", "k": result[1] = result[0].move(-1)
-    of "ctrl+d", "pgdown": result[1] = result[0].move(m.listHeight div 2)
-    of "ctrl+u", "pgup": result[1] = result[0].move(-(m.listHeight div 2))
-    of "g", "home": result[1] = result[0].move(-m.entries.len)
-    of "G", "end": result[1] = result[0].move(m.entries.len)
-    of "enter", "l", "right": result[1] = result[0].enter()
-    of "backspace", "h", "left": result[1] = result[0].goUp()
-    of "r": result[1] = loadDir(m.cwd, m.showHidden)
-    of ".":
+    let k = KeyMsg(msg)
+    if k.matches("q", "ctrl+c"): result[1] = quitCmd()
+    elif k.matches("down", "j"): result[1] = result[0].move(1)
+    elif k.matches("up", "k"): result[1] = result[0].move(-1)
+    elif k.matches("ctrl+d", "pgdown"): result[1] = result[0].move(m.listHeight div 2)
+    elif k.matches("ctrl+u", "pgup"): result[1] = result[0].move(-(m.listHeight div 2))
+    elif k.matches("g", "home"): result[1] = result[0].move(-m.entries.len)
+    elif k.matches("G", "end"): result[1] = result[0].move(m.entries.len)
+    elif k.matches("enter", "l", "right"): result[1] = result[0].enter()
+    elif k.matches("backspace", "h", "left"): result[1] = result[0].goUp()
+    elif k.matches("r"): result[1] = loadDir(m.cwd, m.showHidden)
+    elif k.matches("."):
       result[0].showHidden = not m.showHidden
       result[1] = loadDir(m.cwd, result[0].showHidden)
-    of "~": result[1] = loadDir(getHomeDir(), m.showHidden)
-    of "e":
+    elif k.matches("~"): result[1] = loadDir(getHomeDir(), m.showHidden)
+    elif k.matches("e"):
       # `execCmd`: the terminal goes back to a cooked state, the editor gets it,
       # and the runtime takes it back and repaints when the editor exits. The
       # loop is single-threaded and commands are already synchronous, so a child
@@ -216,7 +216,6 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
                             proc (r: ExecResult): Msg =
                               if r.error != nil: ErrorMsg(error: r.error)
                               else: EditedMsg())
-    else: discard
 
 # --- view ---------------------------------------------------------------------
 

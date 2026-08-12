@@ -137,8 +137,7 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
     let k = KeyMsg(msg)
 
     if m.mode == mSearching:
-      case $k
-      of "enter":
+      if k.matches("enter"):
         result[0].mode = mNormal
         result[0].applyQuery()
         if result[0].matches.len == 0:
@@ -146,7 +145,7 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
         else:
           result[0].jumpTo 0
           result[0].status = ""
-      of "esc":
+      elif k.matches("esc"):
         result[0].mode = mNormal
         result[0].query.clear()
         result[0].applyQuery()
@@ -162,25 +161,23 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
     # Normal mode: the pane gets first refusal on every key.
     if result[0].ta.handleKey(k): return
 
-    case $k
-    of "q", "ctrl+c": result[1] = quitCmd()
+    if k.matches("q", "ctrl+c"): result[1] = quitCmd()
     # Raw mode clears ISIG, so this arrives as an ordinary key and the runtime
     # cannot bind it: ctrl+z is undo about as often as it is suspend. A pager is
     # the archetypal thing to background, so it says so.
-    of "ctrl+z": result[1] = suspendCmd()
-    of "/":
+    elif k.matches("ctrl+z"): result[1] = suspendCmd()
+    elif k.matches("/"):
       result[0].mode = mSearching
       result[0].query.clear()
       result[0].status = ""
-    of "n": result[0].nextMatch 1
-    of "N": result[0].nextMatch(-1)
-    of "w":
+    elif k.matches("n"): result[0].nextMatch 1
+    elif k.matches("N"): result[0].nextMatch(-1)
+    elif k.matches("w"):
       result[0].ta.wrap = not m.ta.wrap
       result[0].ta.xOffset = 0
       result[0].ta.reflow()
       if result[0].committed.len > 0: result[0].applyQuery()
       result[0].status = if result[0].ta.wrap: "wrap on" else: "wrap off"
-    else: discard
 
 # --- view ---------------------------------------------------------------------
 

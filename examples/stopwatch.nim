@@ -27,17 +27,16 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
       result[0].lastTick = now
       result[1] = tick(Interval)
   elif msg of KeyMsg:
-    case $KeyMsg(msg)
-    of "q", "ctrl+c": result[1] = quitCmd()
-    of "space":
+    let k = KeyMsg(msg)
+    if k.matches("q", "ctrl+c"): result[1] = quitCmd()
+    elif k.matches("space"):
       result[0].running = not m.running
       if result[0].running:
         result[0].lastTick = getMonoTime()
         result[1] = tick(Interval)
-    of "r":
+    elif k.matches("r"):
       result[0].elapsed = DurationZero
       result[0].lastTick = getMonoTime()
-    else: discard
 
 proc view(m: Model): string =
   let
