@@ -98,11 +98,19 @@ proc handleKey*(l: var ListView, k: KeyMsg, total: int): bool =
 proc render*(l: ListView, items: openArray[string], width: int,
              selectedStyle = Style().reverse(), itemStyle = Style(),
              selectedPrefix = "▌", prefix = " ",
-             showScrollbar = true, scrollbarStyle = Style().faint()): string =
+             showScrollbar = true, scrollbarStyle = Style().faint(),
+             zebra = Style()): string =
   ## The visible window as a block of exactly `width` x `vp.height` cells.
   ##
   ## The selected row is drawn across its whole width, gutter included, so a
   ## highlight reads as a bar rather than as coloured text with ragged ends.
+  ##
+  ## `zebra` is laid over alternate rows — the same idea as `Table.zebra
+  ## <table.html#Table>`_, and usually a background colour a step off the page.
+  ## It stripes by *item* index rather than by screen row, so the bands belong to
+  ## the data and do not crawl as the window scrolls, and the selected row is
+  ## never striped: two backgrounds on one row means the highlight reads as two
+  ## different colours depending on which item the cursor happens to be on.
   let h = l.vp.height
   if h <= 0 or width <= 0: return ""
   let
@@ -117,8 +125,11 @@ proc render*(l: ListView, items: openArray[string], width: int,
       rows[i] = spaces(rowW)
       continue
     let selected = idx == l.cursor
+    let st =
+      if selected: selectedStyle
+      elif idx mod 2 == 1: itemStyle.merge(zebra)
+      else: itemStyle
     var line: Spans
-    let st = if selected: selectedStyle else: itemStyle
     line.add(padVisible(if selected: selectedPrefix else: prefix, markW), st)
     line.add(padVisible(truncateVisible(items[idx], textW), textW), st)
     rows[i] = line.render()

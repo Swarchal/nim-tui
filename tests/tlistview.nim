@@ -115,6 +115,38 @@ suite "listview rendering":
     check "abcdefghijklmnopqrs" notin withBar
     check "abcdefghijklmnopqrs" in without
 
+  test "zebra stripes alternate items, and the cursor is never striped":
+    let stripe = Style().bg(hex"#1c2128")
+    var l = initListView(height = 4)
+    l.moveTo(1, 4)
+    let ls = l.render(items(4), 20, selectedStyle = Style().bg(hex"#00e5ff"),
+                      zebra = stripe).split('\n')
+    check "28;33;40" notin ls[0]        # item 0: even, bare
+    check "28;33;40" notin ls[1]        # item 1: odd, but it is the cursor
+    check "0;229;255" in ls[1]
+    check "28;33;40" in ls[2] or "28;33;40" in ls[3]
+    check "28;33;40" in ls[3]           # item 3: odd
+    check "28;33;40" notin ls[2]        # item 2: even
+
+  test "the stripes belong to the items, so they do not crawl when scrolling":
+    # Striping by screen row instead would make every band jump a line each time
+    # the window moved, which is the one thing a stripe must not do.
+    let stripe = Style().bg(hex"#1c2128")
+    var l = initListView(height = 2)
+    l.vp.top = 1
+    l.cursor = 9
+    let ls = l.render(items(10), 20, zebra = stripe).split('\n')
+    check "28;33;40" in ls[0]           # item 1
+    check "28;33;40" notin ls[1]        # item 2
+
+  test "a stripe supplies a background without wiping the row's own colour":
+    var l = initListView(height = 2)
+    l.cursor = 0
+    let coloured = @["plain", Style().fg(hex"#ff4e88").render("pink")]
+    let ls = l.render(coloured, 20, zebra = Style().bg(hex"#1c2128")).split('\n')
+    check "255;78;136" in ls[1]         # the item's own foreground survives
+    check "28;33;40" in ls[1]           # under the stripe's background
+
   test "a degenerate size renders nothing rather than a broken block":
     check initListView(height = 0).render(items(5), 20) == ""
     check initListView(height = 5).render(items(5), 0) == ""
