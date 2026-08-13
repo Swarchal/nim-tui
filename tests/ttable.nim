@@ -117,6 +117,35 @@ suite "table appearance":
       for line in t.lines(w):
         check displayWidth(line) == w
 
+  test "a borderless table's header rule is as wide as its rows":
+    # The case this suite used to miss twice over: it turned the rule *off* and
+    # it passed a width, and a width clips the offending line back into
+    # agreement. Unconstrained and with the rule on, the rule used to come out
+    # `columns + 1` wider than every row — a `┼` at every column boundary that
+    # has no separator to cross, plus a glyph off each end where there is no
+    # frame. Nothing pads a block to its narrowest line, so the whole table then
+    # lays out at the rule's width.
+    var t = sample()
+    t.showBorder = false
+    for padding in [0, 1, 2]:
+      t.padding = padding
+      let ls = t.lines()
+      checkpoint "padding " & $padding
+      check ls.len == 5                        # header, rule, three rows
+      for line in ls:
+        check displayWidth(line) == t.totalWidth
+      check "┼" notin ls[1]                    # nothing to cross
+
+  test "a borderless table is exactly its rows, with no frame column":
+    # And the width is the columns and their padding, nothing else: a frame that
+    # is not drawn must not still be paid for.
+    var t = table([column("a", width = 4), column("b", width = 6)])
+    t.add("x", "y")
+    t.showBorder = false
+    t.padding = 1
+    check t.totalWidth == 4 + 6 + 4
+    for line in t.lines(): check displayWidth(line) == 14
+
   test "hiding the header drops exactly one row":
     var t = sample()
     let withHeader = t.lines().len

@@ -162,8 +162,23 @@ proc rule(t: Table, widths: seq[int], left, mid, right: string,
   ## border's interior rule — the top and bottom rules pass their own, since a
   ## half-block frame does not use the same glyph above and below, and what is
   ## left defaulting is the header rule, which is interior by definition.
+  let h = if edge.len > 0: edge else: t.borderChars.innerHorizontalEdge
+  if not t.showBorder:
+    # A rule lines up with the row above it, and a row with no frame has no
+    # separators for it to line up *with* — so there is nothing to draw a
+    # junction at, and nothing outside the first and last cell either. Emitting
+    # them anyway put a `┼` where no `│` was and made this rule `columns + 1`
+    # wider than every other line in the table, which is the frame-
+    # desynchronising failure rather than a stray glyph: nothing pads a block to
+    # its *narrowest* line, so the whole thing lays out at the rule's width.
+    #
+    # Only the header rule reaches this, the top and bottom being drawn under
+    # `showBorder` already, and it is checked here rather than at the call site
+    # so a third caller cannot get it wrong.
+    var s = ""
+    for w in widths: s.add h.repeat(w + 2 * t.padding)
+    return t.borderStyle.render(s)
   let
-    h = if edge.len > 0: edge else: t.borderChars.innerHorizontalEdge
     l = if left.len > 0: left else: h
     m = if mid.len > 0: mid else: h
     r = if right.len > 0: right else: h
