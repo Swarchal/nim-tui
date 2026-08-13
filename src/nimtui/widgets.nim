@@ -187,42 +187,83 @@ proc thinBar*(fraction: float, width: int, fill: Gradient, empty = "─",
     line.add(empty.repeat(width - used), emptyStyle)
   line.render()
 
+func isGap*(v: float): bool =
+  ## Whether a value is *missing* rather than small — the rule every chart here
+  ## reads, and the reason they take `float` rather than an option type: a series
+  ## with holes in it already has a spelling for them.
+  ##
+  ## Any value that is not finite is a gap, so `NaN` and both infinities qualify.
+  ## `NaN` is what a hole in a measured series arrives as; an infinity is not a
+  ## hole but it is not plottable either, and left in the data it would take the
+  ## auto-scale with it and flatten every real value against the axis.
+  ##
+  ## A gap is drawn as nothing, never as zero, in all four of `sparkline`,
+  ## `barChart`, `lineSpark` and `lineChart`, and it is excluded from the scale.
+  ## For the bars that means the `absent` glyph, since a blank column already
+  ## means a value at the bottom of the scale; for the traces it means the line
+  ## *breaks* rather than being drawn through the hole.
+  not (abs(v) < Inf)
+
+func oneColumn(s: string): string =
+  ## `s` cut or padded to exactly one column, for a glyph a caller supplied.
+  ##
+  ## A widget's width is its contract, and a two-column rune arriving in a chart
+  ## is the frame-desynchronising failure rather than a chart that looks wrong.
+  ## The already-correct case is returned untouched, per the layout rule: this
+  ## runs once per call, but so does the reasoning that makes it free.
+  if displayWidth(s) == 1: s else: padVisible(truncateVisible(s, 1), 1)
+
 proc sparkLevels(values: openArray[float], width: int):
     tuple[pad: int, levels: seq[int]] =
   ## Glyph indices (0..7) for the trailing `width` values, plus the left padding
   ## that right-aligns them. Shared so the plain and coloured sparklines cannot
-  ## drift apart in how they scale.
+  ## drift apart in how they scale. A gap is level -1 and is left out of the
+  ## scale, so one bad sample does not rescale the whole line.
   let start = max(values.len - width, 0)
   var
-    lo = values[start]
-    hi = values[start]
+    lo = Inf
+    hi = NegInf
   for i in start ..< values.len:
+    if values[i].isGap: continue
     lo = min(lo, values[i])
     hi = max(hi, values[i])
   let span = max(hi - lo, 1e-9)
   result.pad = max(width - (values.len - start), 0)
   result.levels = newSeqOfCap[int](values.len - start)
   for i in start ..< values.len:
-    result.levels.add clamp((((values[i] - lo) / span) * 7.0).round.int, 0, 7)
+    result.levels.add(
+      if values[i].isGap: -1
+      else: clamp((((values[i] - lo) / span) * 7.0).round.int, 0, 7))
 
-proc sparkline*(values: openArray[float], width: int): string =
+proc sparkline*(values: openArray[float], width: int, absent = " "): string =
   ## The most recent `width` values as a single line of block glyphs, scaled to
   ## the range of those values. Padded on the left when there are fewer values
   ## than columns, so the line grows rightwards as data arrives.
+  ##
+  ## A value that `isGap`_ is drawn as `absent` and kept out of the scale. The
+  ## default is a space, which is what a gap looks like; pass something visible —
+  ## `"░"`, `"·"` — where a hole in the middle of a run has to be told apart from
+  ## the padding at the left, since both are blank. Whatever is passed is cut or
+  ## padded to one column.
   if width <= 0 or values.len == 0: return ""
-  let (pad, levels) = sparkLevels(values, width)
+  let
+    (pad, levels) = sparkLevels(values, width)
+    gap = oneColumn(absent)
   # Every glyph is a 3-byte rune, so the final size is known up front.
   result = newStringOfCap(width * 3)
   result.add spaces(pad)
   for lv in levels:
-    result.add SparkChars[lv]
+    result.add(if lv < 0: gap else: SparkChars[lv])
 
-proc sparkline*(values: openArray[float], width: int, colours: Gradient): string =
+proc sparkline*(values: openArray[float], width: int, colours: Gradient,
+                absent = " "): string =
   ## `sparkline` with each glyph coloured by its own height, so the colour says
   ## the same thing as the glyph and a tall spike is legible at a glance even
   ## where the eighth-block steps are hard to tell apart.
   if width <= 0 or values.len == 0: return ""
-  let (pad, levels) = sparkLevels(values, width)
+  let
+    (pad, levels) = sparkLevels(values, width)
+    gap = oneColumn(absent)
   var line: Spans
   if pad > 0: line.add spaces(pad)
   # A glyph's colour depends only on its level, and there are eight of those, so
@@ -237,6 +278,9 @@ proc sparkline*(values: openArray[float], width: int, colours: Gradient): string
   # recomputes that level, which is correct and no slower than before.
   var sampled: array[8, Color]
   for lv in levels:
+    if lv < 0:
+      line.add gap                     # a gap has no height, so no colour
+      continue
     if sampled[lv].kind == ckDefault: sampled[lv] = colours.at(lv.float / 7.0)
     line.add(SparkChars[lv], Style().fg(sampled[lv]))
   line.render()
@@ -253,6 +297,10 @@ proc chartNorms(values: openArray[float], start: int, lo, hi: float,
   ## zero height is *blank*, so a flatline has to be lifted to the shortest
   ## visible bar or it looks like no data; a line at zero is a line along the
   ## bottom row, already visible, so `lineChart` passes 0.0 and leaves it there.
+  ##
+  ## A value that `isGap`_ comes back as a gap: it is left out of the auto-scale,
+  ## and it stays a gap under a fixed scale too, where there is no scale for it to
+  ## affect but still nothing to draw.
   var
     low = lo
     high = hi
@@ -261,6 +309,7 @@ proc chartNorms(values: openArray[float], start: int, lo, hi: float,
     low = Inf
     high = NegInf
     for i in start ..< values.len:
+      if values[i].isGap: continue
       low = min(low, values[i])
       high = max(high, values[i])
     if low > high: (low, high) = (0.0, 1.0)      # nothing to draw
@@ -270,11 +319,12 @@ proc chartNorms(values: openArray[float], start: int, lo, hi: float,
   for i in start ..< values.len:
     # An auto-scaled series with no range has nothing to scale against, so every
     # value comes out at zero and the chart is drawn at `flatLevel` instead.
-    result.add(if flat: flatLevel
+    result.add(if values[i].isGap: NaN
+               elif flat: flatLevel
                else: clamp((values[i] - low) / span, 0.0, 1.0))
 
 proc barChart*(values: openArray[float], width, height: int,
-               lo = 0.0, hi = 0.0): seq[string] =
+               lo = 0.0, hi = 0.0, absent = " "): seq[string] =
   ## A column chart `height` rows tall, one column per value, most recent last.
   ##
   ## Each cell resolves an eighth of a row, so a 6-row chart has 48 levels.
@@ -286,23 +336,31 @@ proc barChart*(values: openArray[float], width, height: int,
   ## to scale against, and is drawn as the shortest visible bar rather than as an
   ## empty chart, so a flatline is distinguishable from no data. Under a *fixed*
   ## scale a value equal to `lo` is genuinely zero-height and stays blank.
+  ##
+  ## A value that `isGap`_ is drawn as `absent` in every row and kept out of the
+  ## scale. That is the distinction a blank column cannot make on its own: a bar
+  ## at the bottom of the scale is blank too.
   if width <= 0 or height <= 0: return @[]
   let
     start = max(values.len - width, 0)
     norms = chartNorms(values, start, lo, hi, 1.0 / (height * 8).float)
     pad = max(width - norms.len, 0)
+    gap = oneColumn(absent)
   result = newSeqOfCap[string](height)
   for row in 0 ..< height:
     let floorEighths = (height - 1 - row) * 8
     var line = newStringOfCap(pad + norms.len * 3)
     line.add spaces(pad)
     for n in norms:
+      if n.isGap:
+        line.add gap
+        continue
       let eighths = clamp((n * (height * 8).float).round.int - floorEighths, 0, 8)
       line.add(if eighths == 0: " " else: SparkChars[eighths - 1])
     result.add line
 
 proc barChart*(values: openArray[float], width, height: int, colours: Gradient,
-               lo = 0.0, hi = 0.0): seq[string] =
+               lo = 0.0, hi = 0.0, absent = " "): seq[string] =
   ## `barChart` with each column coloured by its own value, so a bar's height
   ## and its colour carry the same information — which is what keeps a chart
   ## readable once it is only a few rows tall.
@@ -311,16 +369,22 @@ proc barChart*(values: openArray[float], width, height: int, colours: Gradient,
     start = max(values.len - width, 0)
     norms = chartNorms(values, start, lo, hi, 1.0 / (height * 8).float)
     pad = max(width - norms.len, 0)
+    gap = oneColumn(absent)
   # Sampled once for the whole chart rather than per cell: the same column has
   # the same colour in every row, so re-deriving it `height` times is wasted.
+  # A gap has no value to sample at, and `at(NaN)` is not a question with an
+  # answer — the render loop tests for one before reading this.
   var colColours = newSeqOfCap[Color](norms.len)
-  for n in norms: colColours.add colours.at(n)
+  for n in norms: colColours.add(if n.isGap: Color() else: colours.at(n))
   result = newSeqOfCap[string](height)
   for row in 0 ..< height:
     let floorEighths = (height - 1 - row) * 8
     var line: Spans
     if pad > 0: line.add spaces(pad)
     for i, n in norms:
+      if n.isGap:
+        line.add gap
+        continue
       let eighths = clamp((n * (height * 8).float).round.int - floorEighths, 0, 8)
       if eighths == 0:
         line.add " "
@@ -331,22 +395,107 @@ proc barChart*(values: openArray[float], width, height: int, colours: Gradient,
 type
   PlotGlyphs* = enum
     ## Which glyph a plotted cell is drawn with, and so how finely `lineChart`
-    ## divides one — the whole difference between the three is resolution and
+    ## divides one — the whole difference between the five is resolution and
     ## how likely the terminal's font is to have them.
     pgBraille   ## 2x4 dots, `U+2800`..`U+28FF`. The most detail per cell.
     pgBlocks    ## 2x2 quadrant blocks. Coarser, in every font that draws borders.
     pgAscii     ## 1x1, a `*` per cell. Nothing to be missing.
+    pgSextant   ## 2x3 sextant blocks. Between the two above, and *solid*: the
+                ## pseudo-pixels are packed edge to edge, where braille dots
+                ## leave a visible gap between one cell and the next. Unicode
+                ## 13's Symbols for Legacy Computing, so newer than braille and
+                ## in fewer fonts.
+    pgOctant    ## 2x4 octant blocks — braille's resolution drawn solid.
+                ## Unicode 16's Symbols for Legacy Computing *Supplement*, added
+                ## in 2024, so this is the one most likely to come out as
+                ## replacement characters. `pgSextant` is the safer solid set
+                ## and `pgBraille` the safer 2x4 one; this is both at once, for
+                ## a terminal known to have it.
 
 const
   QuadrantGlyphs* = [" ", "▘", "▝", "▀", "▖", "▌", "▞", "▛",
                      "▗", "▚", "▐", "▜", "▄", "▙", "▟", "█"]
     ## The sixteen 2x2 quadrant combinations, indexed by a bit mask counting
     ## `1` top left, `2` top right, `4` bottom left, `8` bottom right.
+  SextantGlyphs* = [
+    " ", "🬀", "🬁", "🬂", "🬃", "🬄", "🬅", "🬆", "🬇", "🬈", "🬉", "🬊", "🬋", "🬌", "🬍", "🬎",
+    "🬏", "🬐", "🬑", "🬒", "🬓", "▌", "🬔", "🬕", "🬖", "🬗", "🬘", "🬙", "🬚", "🬛", "🬜", "🬝",
+    "🬞", "🬟", "🬠", "🬡", "🬢", "🬣", "🬤", "🬥", "🬦", "🬧", "▐", "🬨", "🬩", "🬪", "🬫", "🬬",
+    "🬭", "🬮", "🬯", "🬰", "🬱", "🬲", "🬳", "🬴", "🬵", "🬶", "🬷", "🬸", "🬹", "🬺", "🬻", "█"]
+    ## The sixty-four 2x3 sextant combinations, indexed by the same row-major
+    ## mask `lineMasks` builds — bit `sy * 2 + sx`, so `1` is the top left.
+    ##
+    ## The four whose picture already existed are the older glyphs rather than
+    ## new ones: nothing, `▌`, `▐` and `█`. That is why this is a table and not
+    ## `U+1FB00 + mask` — the block has sixty entries, not sixty-four.
+  OctantGlyphs* = [
+    " ", "𜺨", "𜺫", "🮂", "𜴀", "▘", "𜴁", "𜴂", "𜴃", "𜴄", "▝", "𜴅", "𜴆", "𜴇", "𜴈", "▀",
+    "𜴉", "𜴊", "𜴋", "𜴌", "🯦", "𜴍", "𜴎", "𜴏", "𜴐", "𜴑", "𜴒", "𜴓", "𜴔", "𜴕", "𜴖", "𜴗",
+    "𜴘", "𜴙", "𜴚", "𜴛", "𜴜", "𜴝", "𜴞", "𜴟", "🯧", "𜴠", "𜴡", "𜴢", "𜴣", "𜴤", "𜴥", "𜴦",
+    "𜴧", "𜴨", "𜴩", "𜴪", "𜴫", "𜴬", "𜴭", "𜴮", "𜴯", "𜴰", "𜴱", "𜴲", "𜴳", "𜴴", "𜴵", "🮅",
+    "𜺣", "𜴶", "𜴷", "𜴸", "𜴹", "𜴺", "𜴻", "𜴼", "𜴽", "𜴾", "𜴿", "𜵀", "𜵁", "𜵂", "𜵃", "𜵄",
+    "▖", "𜵅", "𜵆", "𜵇", "𜵈", "▌", "𜵉", "𜵊", "𜵋", "𜵌", "▞", "𜵍", "𜵎", "𜵏", "𜵐", "▛",
+    "𜵑", "𜵒", "𜵓", "𜵔", "𜵕", "𜵖", "𜵗", "𜵘", "𜵙", "𜵚", "𜵛", "𜵜", "𜵝", "𜵞", "𜵟", "𜵠",
+    "𜵡", "𜵢", "𜵣", "𜵤", "𜵥", "𜵦", "𜵧", "𜵨", "𜵩", "𜵪", "𜵫", "𜵬", "𜵭", "𜵮", "𜵯", "𜵰",
+    "𜺠", "𜵱", "𜵲", "𜵳", "𜵴", "𜵵", "𜵶", "𜵷", "𜵸", "𜵹", "𜵺", "𜵻", "𜵼", "𜵽", "𜵾", "𜵿",
+    "𜶀", "𜶁", "𜶂", "𜶃", "𜶄", "𜶅", "𜶆", "𜶇", "𜶈", "𜶉", "𜶊", "𜶋", "𜶌", "𜶍", "𜶎", "𜶏",
+    "▗", "𜶐", "𜶑", "𜶒", "𜶓", "▚", "𜶔", "𜶕", "𜶖", "𜶗", "▐", "𜶘", "𜶙", "𜶚", "𜶛", "▜",
+    "𜶜", "𜶝", "𜶞", "𜶟", "𜶠", "𜶡", "𜶢", "𜶣", "𜶤", "𜶥", "𜶦", "𜶧", "𜶨", "𜶩", "𜶪", "𜶫",
+    "▂", "𜶬", "𜶭", "𜶮", "𜶯", "𜶰", "𜶱", "𜶲", "𜶳", "𜶴", "𜶵", "𜶶", "𜶷", "𜶸", "𜶹", "𜶺",
+    "𜶻", "𜶼", "𜶽", "𜶾", "𜶿", "𜷀", "𜷁", "𜷂", "𜷃", "𜷄", "𜷅", "𜷆", "𜷇", "𜷈", "𜷉", "𜷊",
+    "𜷋", "𜷌", "𜷍", "𜷎", "𜷏", "𜷐", "𜷑", "𜷒", "𜷓", "𜷔", "𜷕", "𜷖", "𜷗", "𜷘", "𜷙", "𜷚",
+    "▄", "𜷛", "𜷜", "𜷝", "𜷞", "▙", "𜷟", "𜷠", "𜷡", "𜷢", "▟", "𜷣", "▆", "𜷤", "𜷥", "█"]
+    ## The two hundred and fifty-six 2x4 octant combinations, indexed by the
+    ## same row-major mask. Braille's resolution with no gap between cells.
+    ##
+    ## Twenty-two of them are older glyphs — the quadrants, the halves and the
+    ## quarter-height blocks — for the reason the sextant table has four, and
+    ## which the `static:` block below turns into a check on the transcription.
   BrailleDotBits = [0x01'u8, 0x08, 0x02, 0x10, 0x04, 0x20, 0x40, 0x80]
     ## The braille dot bit for each of the eight sub-cells, in the same
     ## left-to-right then top-to-bottom order the masks below are built in.
     ## Braille numbers its dots down the left column and then down the right,
     ## with 7 and 8 added later at the bottom, so this table is not a shift.
+
+static:
+  # Two hand-transcribed tables, and a wrong entry in either is invisible
+  # downstream — the chart comes out exactly as wide and as tall, drawing a
+  # different picture. Same reasoning as `boxdraw`'s and `digits`' `static:`
+  # blocks, and checked the same three ways: every glyph is one column, no two
+  # masks share a glyph, and the entries whose picture already had a codepoint
+  # agree with the table that already holds it.
+  for g in SextantGlyphs:
+    doAssert displayWidth(g) == 1, "sextant glyph is not one column: " & g
+  for g in OctantGlyphs:
+    doAssert displayWidth(g) == 1, "octant glyph is not one column: " & g
+  for i, a in SextantGlyphs:
+    for j in i + 1 ..< SextantGlyphs.len:
+      doAssert a != SextantGlyphs[j], "sextants " & $i & " and " & $j & " agree"
+  for i, a in OctantGlyphs:
+    for j in i + 1 ..< OctantGlyphs.len:
+      doAssert a != OctantGlyphs[j], "octants " & $i & " and " & $j & " agree"
+  # An octant whose four sub-rows agree in pairs is a quadrant, and there is one
+  # glyph for that picture rather than two. This is the strongest check
+  # available on the octant table: sixteen entries spread across it, each of
+  # which has to land in the slot the mask arithmetic says it does — so a
+  # transposition anywhere near one of them fails the build.
+  for q in 0 .. 15:
+    let
+      top = (q and 1) or ((q shr 1) and 1) shl 1
+      bottom = ((q shr 2) and 1) or ((q shr 3) and 1) shl 1
+      mask = top or (top shl 2) or (bottom shl 4) or (bottom shl 6)
+    doAssert OctantGlyphs[mask] == QuadrantGlyphs[q],
+      "octant " & $mask & " should be quadrant " & $q
+  # And one whose rows are wholly on or off from the bottom up is an eighth
+  # block: a 2x4 row is two eighths of the cell.
+  for rows in 1 .. 4:
+    var mask = 0
+    for r in 4 - rows ..< 4: mask = mask or (0b11 shl (r * 2))
+    doAssert OctantGlyphs[mask] == SparkChars[rows * 2 - 1],
+      "octant " & $mask & " should be " & SparkChars[rows * 2 - 1]
+  doAssert SextantGlyphs[0] == " " and OctantGlyphs[0] == " "
+  doAssert SextantGlyphs[0b010101] == "▌" and SextantGlyphs[0b101010] == "▐"
+  doAssert OctantGlyphs[0b01010101] == "▌" and OctantGlyphs[0b10101010] == "▐"
 
 func dotsX*(g: PlotGlyphs): int =
   ## Sub-columns per cell: how many values `lineChart` fits in one column.
@@ -355,7 +504,8 @@ func dotsX*(g: PlotGlyphs): int =
 func dotsY*(g: PlotGlyphs): int =
   ## Sub-rows per cell: how many distinct heights `lineChart` resolves per row.
   case g
-  of pgBraille: 4
+  of pgBraille, pgOctant: 4
+  of pgSextant: 3
   of pgBlocks: 2
   of pgAscii: 1
 
@@ -375,15 +525,21 @@ proc addGlyph(dest: var string, g: PlotGlyphs, mask: int) =
       dest.add chr(0xA0 + (bits.int shr 6))
       dest.add chr(0x80 + (bits.int and 0x3F))
   of pgBlocks: dest.add QuadrantGlyphs[mask and 0xF]
+  of pgSextant: dest.add SextantGlyphs[mask and 0x3F]
+  of pgOctant: dest.add OctantGlyphs[mask and 0xFF]
   of pgAscii: dest.add(if mask == 0: ' ' else: '*')
 
 proc lineMasks(values: openArray[float], width, height: int, lo, hi: float,
-               glyphs: PlotGlyphs): seq[int] =
+               glyphs: PlotGlyphs, fill = false): seq[int] =
   ## One sub-cell bit mask per cell, row major from the top left, for the
   ## trailing `width * dotsX` values.
   ##
   ## Bit `sy * dotsX + sx`, so the lowest set bit of a mask is its topmost
   ## sub-row — which is what the coloured overload reads to colour a cell.
+  ##
+  ## `fill` carries each column on down to the bottom row instead of stopping at
+  ## the trace, which is an area chart. The lowest set bit is unmoved by that, so
+  ## the colouring above still follows the trace rather than the fill.
   let
     dx = dotsX(glyphs)
     dy = dotsY(glyphs)
@@ -395,6 +551,13 @@ proc lineMasks(values: openArray[float], width, height: int, lo, hi: float,
   result = newSeq[int](width * height)
   var prev = -1
   for i, n in norms:
+    # A gap breaks the trace: nothing is drawn in its column, and `prev` is
+    # dropped so the next value is not joined to the one before the hole. Drawing
+    # that step would state a slope across missing data, which is the one thing a
+    # line says that a bar does not.
+    if n.isGap:
+      prev = -1
+      continue
     let
       px = pad + i
       # `rows - 1`, not `rows`: this is where the line *is*, so the top and
@@ -402,7 +565,9 @@ proc lineMasks(values: openArray[float], width, height: int, lo, hi: float,
       # against `rows`, which is why the two cannot share this.
       y = rows - 1 - clamp((n * (rows - 1).float).round.int, 0, rows - 1)
       top = if prev < 0: y else: min(prev, y)
-      bottom = if prev < 0: y else: max(prev, y)
+      bottom = if fill: rows - 1
+               elif prev < 0: y
+               else: max(prev, y)
     # The whole step from the previous value is drawn in this column, so the
     # trace is connected rather than a row of dots with gaps where it climbed.
     for py in top .. bottom:
@@ -411,7 +576,8 @@ proc lineMasks(values: openArray[float], width, height: int, lo, hi: float,
     prev = y
 
 proc lineChart*(values: openArray[float], width, height: int,
-                lo = 0.0, hi = 0.0, glyphs = pgBraille): seq[string] =
+                lo = 0.0, hi = 0.0, glyphs = pgBraille,
+                fill = false): seq[string] =
   ## The values as a connected trace `height` rows tall, most recent last.
   ##
   ## The same data and the same scaling as `barChart`, drawn as a line instead of
@@ -423,8 +589,14 @@ proc lineChart*(values: openArray[float], width, height: int,
   ## Pass `lo`/`hi` to fix the scale; leaving them equal auto-scales to the data.
   ## Unlike `barChart` a flat series needs no special case, since a line along the
   ## bottom row is already visible.
+  ##
+  ## `fill` fills from the trace down to the bottom, which is an area chart: the
+  ## same shape reading as a quantity rather than as a path, and the middle
+  ## ground between this and `barChart` — a filled region with a sub-cell edge.
+  ##
+  ## A value that `isGap`_ breaks the line rather than being drawn through.
   if width <= 0 or height <= 0: return @[]
-  let masks = lineMasks(values, width, height, lo, hi, glyphs)
+  let masks = lineMasks(values, width, height, lo, hi, glyphs, fill)
   result = newSeqOfCap[string](height)
   for row in 0 ..< height:
     var line = newStringOfCap(width * 3)
@@ -433,7 +605,8 @@ proc lineChart*(values: openArray[float], width, height: int,
     result.add line
 
 proc lineChart*(values: openArray[float], width, height: int, colours: Gradient,
-                lo = 0.0, hi = 0.0, glyphs = pgBraille): seq[string] =
+                lo = 0.0, hi = 0.0, glyphs = pgBraille,
+                fill = false): seq[string] =
   ## `lineChart` with each cell coloured by the highest the trace reached in it,
   ## which is what the glyph in that cell already says — the same relation
   ## `sparkline`'s gradient keeps, and the reason a two-row chart is still
@@ -444,7 +617,7 @@ proc lineChart*(values: openArray[float], width, height: int, colours: Gradient,
     dy = dotsY(glyphs)
     rows = height * dy
     span = max(rows - 1, 1).float
-    masks = lineMasks(values, width, height, lo, hi, glyphs)
+    masks = lineMasks(values, width, height, lo, hi, glyphs, fill)
   result = newSeqOfCap[string](height)
   var
     cell = newStringOfCap(3)
@@ -470,7 +643,7 @@ proc lineChart*(values: openArray[float], width, height: int, colours: Gradient,
     result.add line.render()
 
 proc lineSpark*(values: openArray[float], width: int, lo = 0.0, hi = 0.0,
-                glyphs = pgBraille): string =
+                glyphs = pgBraille, fill = false): string =
   ## A one-row `lineChart`: `sparkline`'s shape, drawn as a trace.
   ##
   ## Four heights and two values per cell under `pgBraille`, against a
@@ -481,13 +654,19 @@ proc lineSpark*(values: openArray[float], width: int, lo = 0.0, hi = 0.0,
   ## One row is where the glyph set matters most: `pgBlocks` has two heights to
   ## work with and `pgAscii` has one, which makes an ascii `lineSpark` a solid
   ## row of `*`. Those two want rows; only braille says anything in a single one.
-  let rows = lineChart(values, width, 1, lo, hi, glyphs)
+  ##
+  ## `fill` is the same one row filled from the trace down, which at this height
+  ## is a `sparkline` with the top edge resolved in both directions instead of
+  ## just in height — four steps up and two values across, against eight steps
+  ## and one value, under `pgBraille`.
+  let rows = lineChart(values, width, 1, lo, hi, glyphs, fill)
   if rows.len > 0: rows[0] else: ""
 
 proc lineSpark*(values: openArray[float], width: int, colours: Gradient,
-                lo = 0.0, hi = 0.0, glyphs = pgBraille): string =
+                lo = 0.0, hi = 0.0, glyphs = pgBraille,
+                fill = false): string =
   ## `lineSpark` with each cell coloured by the highest the trace reached in it.
-  let rows = lineChart(values, width, 1, colours, lo, hi, glyphs)
+  let rows = lineChart(values, width, 1, colours, lo, hi, glyphs, fill)
   if rows.len > 0: rows[0] else: ""
 
 proc spinner*(frame: int): string =

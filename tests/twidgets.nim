@@ -152,7 +152,7 @@ suite "line charts":
   ## (a braille or quadrant glyph measured as two columns wraps the frame) and
   ## the sub-cell bit order, which nothing dimensional can see.
 
-  const AllGlyphs = [pgBraille, pgBlocks, pgAscii]
+  const AllGlyphs = [pgBraille, pgBlocks, pgAscii, pgSextant, pgOctant]
 
   test "a chart is exactly width x height in every glyph set":
     let values = @[10.0, 40.0, 90.0, 20.0, 55.0, 5.0, 80.0]
@@ -192,6 +192,21 @@ suite "line charts":
     check lineChart(@[1.0, 0.0], 1, 1, lo = 0.0, hi = 1.0) == @["⢹"]
     check lineChart(@[0.0, 1.0], 1, 1, 0.0, 1.0, pgBlocks) == @["▟"]
     check lineChart(@[1.0, 0.0], 1, 1, 0.0, 1.0, pgBlocks) == @["▜"]
+    # The same two pictures in the solid sets: the whole right column, plus the
+    # one sub-cell on the left the trace started or ended on.
+    check lineChart(@[0.0, 1.0], 1, 1, 0.0, 1.0, pgSextant) == @["🬷"]
+    check lineChart(@[1.0, 0.0], 1, 1, 0.0, 1.0, pgSextant) == @["🬨"]
+    check lineChart(@[0.0, 1.0], 1, 1, 0.0, 1.0, pgOctant) == @["𜷕"]
+    check lineChart(@[1.0, 0.0], 1, 1, 0.0, 1.0, pgOctant) == @["𜶘"]
+
+  test "a solid set falls back to the older glyph where one exists":
+    # A whole sub-row is a block that had a codepoint before these sets did, so
+    # these four pin that the table lands those in the slots the mask arithmetic
+    # picks — the run-time half of the `static:` block's transcription check.
+    check lineChart(@[0.0, 0.0], 1, 1, 0.0, 1.0, pgOctant) == @["▂"]
+    check lineChart(@[1.0, 1.0], 1, 1, 0.0, 1.0, pgOctant) == @["🮂"]
+    check lineChart(@[0.0, 0.0], 1, 1, 0.0, 1.0, pgSextant) == @["🬭"]
+    check lineChart(@[1.0, 1.0], 1, 1, 0.0, 1.0, pgSextant) == @["🬂"]
 
   test "the top and bottom rows are both reachable":
     # A line is a position, so it rounds against `rows - 1`; a bar is a quantity
@@ -213,6 +228,10 @@ suite "line charts":
     check dotsX(pgBraille) == 2 and dotsY(pgBraille) == 4
     check dotsX(pgBlocks) == 2 and dotsY(pgBlocks) == 2
     check dotsX(pgAscii) == 1 and dotsY(pgAscii) == 1
+    # An octant is braille's resolution drawn solid, so it holds exactly as much;
+    # a sextant is one sub-row less. That is the whole difference between them.
+    check dotsX(pgOctant) == 2 and dotsY(pgOctant) == 4
+    check dotsX(pgSextant) == 2 and dotsY(pgSextant) == 3
     # Trailing window, as `sparkline`: the older half falls off a chart half as
     # wide as the data, and the visible end is the recent one.
     let values = @[0.0, 0.0, 0.0, 0.0, 9.0, 9.0]
@@ -224,6 +243,111 @@ suite "line charts":
     for g in AllGlyphs:
       check lineSpark(values, 6, glyphs = g) == lineChart(values, 6, 1, glyphs = g)[0]
       check displayWidth(lineSpark(values, 6, glyphs = g)) == 6
+
+suite "an area chart is a trace filled to the bottom":
+  const AllGlyphs = [pgBraille, pgBlocks, pgAscii, pgSextant, pgOctant]
+  const Values = @[10.0, 40.0, 90.0, 20.0, 55.0, 5.0, 80.0, 30.0]
+
+  test "filling changes nothing dimensional":
+    for g in AllGlyphs:
+      for w in [1, 3, 8, 40]:
+        for h in [1, 2, 5]:
+          let rows = lineChart(Values, w, h, glyphs = g, fill = true)
+          checkpoint $g & " " & $w & "x" & $h
+          check rows.len == h
+          for r in rows: check displayWidth(r) == w
+
+  test "every column reaches the bottom row":
+    # The property that makes it an area rather than a trace, and the one a
+    # width check cannot see. Ascii, because there a filled cell is one glyph.
+    let rows = lineChart(Values, 8, 4, glyphs = pgAscii, fill = true)
+    check rows[^1] == "********"
+    check rows[0] != "********"                # and it is still a chart
+
+  test "a full cell is the full block, in every set that has one":
+    # A flat series at the top of a fixed scale fills every sub-cell.
+    check lineChart(@[1.0, 1.0], 1, 1, 0.0, 1.0, pgBraille, fill = true) == @["⣿"]
+    check lineChart(@[1.0, 1.0], 1, 1, 0.0, 1.0, pgBlocks, fill = true) == @["█"]
+    check lineChart(@[1.0, 1.0], 1, 1, 0.0, 1.0, pgSextant, fill = true) == @["█"]
+    check lineChart(@[1.0, 1.0], 1, 1, 0.0, 1.0, pgOctant, fill = true) == @["█"]
+
+  test "the colour still follows the trace, not the fill":
+    # The coloured overload reads the lowest set bit, which the fill leaves where
+    # it was — so a filled cell is coloured by how high the trace got in it, the
+    # same relation the unfilled chart keeps. A fill that coloured by its own
+    # bottom edge would make every column the same colour.
+    let
+      plain = lineChart(@[0.0, 1.0], 2, 2, HeatGradient, 0.0, 1.0, pgAscii)
+      filled = lineChart(@[0.0, 1.0], 2, 2, HeatGradient, 0.0, 1.0, pgAscii, true)
+    check plain[0] == filled[0]                # the top row is trace either way
+
+suite "a gap is not a zero":
+  ## Missing data, which every one of these widgets used to draw as the bottom of
+  ## the scale — and worse, used to *scale against*, since a `NaN` in the range
+  ## walk poisons the min and max it is compared into.
+
+  test "any non-finite value is a gap":
+    check NaN.isGap and Inf.isGap and NegInf.isGap
+    check not 0.0.isGap and not (-1e300).isGap
+
+  test "a gap keeps the width, in every widget":
+    let values = @[3.0, NaN, 8.0, 13.0, Inf, 4.0, 2.0, NaN]
+    for w in [1, 4, 8, 20]:
+      check displayWidth(sparkline(values, w)) == w
+      check displayWidth(sparkline(values, w, absent = "░")) == w
+      for r in barChart(values, w, 3, absent = "·"): check displayWidth(r) == w
+      for r in lineChart(values, w, 3): check displayWidth(r) == w
+
+  test "an oversized absent glyph cannot widen the chart":
+    # A caller's glyph is cut to one column, because the width is the contract:
+    # a two-column rune per gap is the frame-desynchronising failure.
+    let values = @[1.0, NaN, 3.0, NaN]
+    check displayWidth(sparkline(values, 4, absent = "漢")) == 4
+    check displayWidth(sparkline(values, 4, absent = "")) == 4
+    check displayWidth(sparkline(values, 4, absent = "ab")) == 4
+
+  test "the absent glyph is drawn where the gap is":
+    check sparkline(@[1.0, NaN, 2.0], 3, absent = "·") == "▁·█"
+    check sparkline(@[1.0, NaN, 2.0], 3) == "▁ █"
+
+  test "a gap is left out of the scale":
+    # The point of the whole thing: with the gap scaled as a zero the other two
+    # values are squashed against the top, and with it poisoning the range walk
+    # they are worse than that.
+    check sparkline(@[1.0, NaN, 2.0], 3) == "▁ █"
+    check sparkline(@[1.0, 0.0, 2.0], 3) == "▅▁█"   # what a zero there would give
+    check sparkline(@[5.0, 10.0, NaN], 3) == sparkline(@[5.0, 10.0], 2) & " "
+    let bars = barChart(@[0.0, NaN, 100.0], 3, 2, absent = "·")
+    check bars[0] == " ·█"                      # the 100 is the top of the scale
+    check bars[1] == " ·█"
+
+  test "a bar chart tells a gap from a floor value":
+    # Both are blank columns without this: the whole reason the glyph exists.
+    let bars = barChart(@[0.0, NaN], 2, 2, lo = 0.0, hi = 10.0, absent = "░")
+    for r in bars: check r == " ░"
+
+  test "a trace breaks at a gap rather than being drawn through it":
+    # Ascii at one sub-cell per cell, so a drawn cell is visible as one glyph.
+    check lineChart(@[0.0, NaN, 1.0], 3, 2, 0.0, 1.0, pgAscii) == @["  *", "*  "]
+    # And the value after the hole is not joined back to the one before it: a
+    # step drawn across missing data states a slope that was never measured.
+    check lineChart(@[0.0, 1.0], 2, 2, 0.0, 1.0, pgAscii) == @[" *", "**"]
+
+  test "a series that is nothing but gaps is a blank chart, not a crash":
+    let values = @[NaN, NaN, NaN]
+    check sparkline(values, 3) == "   "
+    check barChart(values, 3, 2) == @["   ", "   "]
+    check lineChart(values, 3, 2, glyphs = pgAscii) == @["   ", "   "]
+
+  test "the coloured overloads agree with the plain ones glyph for glyph":
+    let
+      saved = colorProfile()
+      values = @[3.0, NaN, 8.0, 2.0, Inf, 9.0]
+    setColorProfile(cpNoColor)
+    check sparkline(values, 6, HeatGradient, "·") == sparkline(values, 6, "·")
+    check barChart(values, 6, 3, HeatGradient, absent = "·") ==
+          barChart(values, 6, 3, absent = "·")
+    setColorProfile(saved)
 
 suite "gradient widgets":
   test "a gradient gauge is exactly as wide as a plain one":

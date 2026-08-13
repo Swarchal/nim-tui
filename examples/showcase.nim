@@ -194,9 +194,24 @@ proc metricsPane(m: Model): string =
              span(&" {cur:5.1f}{unit}", t.accentStyle).render()
   rows.add ""
 
-  rows.add span("cpu, last " & $min(m.cpu.len, w) & " samples",
-                t.mutedStyle).render()
+  # The same series twice, at the same width, because the pair is the point: a
+  # `sparkline` cell is one sample at eight heights, and a filled `lineSpark` is
+  # two samples at four — same quantity reading, twice the history, and a top
+  # edge that resolves the shape *between* two samples instead of averaging them
+  # away. Both scale to their own window, so the two lines are directly
+  # comparable; what differs is only how the cell is divided.
+  # Each row says how much of its window has arrived, out of what it holds, which
+  # is where the second number differs: both are `w` cells and the area's are
+  # divided in two. Early on that shows as a half-filled row — both pad on the
+  # left — and once the history fills, as twice as much of it on screen.
+  let held = min(m.cpu.len, w)
+  rows.add span(&"cpu · bars, last {held} of {w}", t.mutedStyle).render()
   rows.add sparkline(m.cpu, w, t.ramp)
+  let
+    window = w * dotsX(pgBraille)
+    heldArea = min(m.cpu.len, window)
+  rows.add span(&"cpu · area, last {heldArea} of {window}", t.mutedStyle).render()
+  rows.add lineSpark(m.cpu, w, t.ramp, fill = true)
   rows.add ""
 
   let chartHeight = max(m.innerHeight - rows.len - 1, 2)

@@ -148,9 +148,14 @@ click needs.
 
 `nimtui/digits` - numerals three rows tall, in a thin and a bold set.
 
-`nimtui/widgets` - `gauge`, `thinBar`, `sparkline`, `barChart`, `spinner`,
-`pulse`, `keyHint`, `hints`. Each returns exactly the width asked for, using
-partial block glyphs so a bar resolves an eighth of a cell.
+`nimtui/widgets` - `gauge`, `thinBar`, `sparkline`, `barChart`, `lineSpark`,
+`lineChart`, `spinner`, `pulse`, `keyHint`, `hints`. Each returns exactly the
+width asked for, using partial block glyphs so a bar resolves an eighth of a
+cell. The line charts divide the cell in both directions instead, at braille,
+quadrant, sextant, octant or ascii resolution, and `fill` turns one into an area
+chart. A value that is not finite is a *gap* in all of them: left out of the
+scale, drawn as `absent` by the bars and breaking the line in the traces, rather
+than plotted as a zero.
 
 None of these touches a terminal or depends on the runtime, so they can be used
 on their own - and `update`/`view` can be tested without either.
@@ -177,6 +182,7 @@ Then the ones that exercise the runtime properly:
 | `todo` | A model with modes. `update` dispatches on `m.mode` before the key, which is what stops a text field swallowing `q`. Also: live filtering where the cursor tracks the filtered list, and flash messages that expire via `after` |
 | `dashboard` | Three concurrent timers at different rates (90ms spinner, 400ms sample, 1.2s log), each re-arming itself, none blocking the others. Also: a 2x2 grid that collapses to one column when narrow |
 | `snake` | A game loop whose tick rate changes with the score. Ticks are stamped with a generation so stale ones are dropped rather than double-stepping, and turns are buffered until the step so mashing keys cannot fold the snake into itself |
+| `gitlog` | The biggest one, and the only one that is not about a single idea — it is about the seams, the failures that only exist where two features meet. A repository browser: commits, the files each touched, the diff. Key dispatch with four levels (overlay, mode, focused component, application); a palette mixed from the terminal's *own* background, so a diff's added and removed lines read as a tint on a light terminal and a dark one alike; `c` to switch between colouring the patch itself and taking git's, which is what styled text through a `TextArea` looks like; history loaded a page at a time with a generation guard, and the diff behind a debounce so holding `j` does not run a `git show` per keypress. Also `execCmd` twice over — `enter` hands the terminal to `git show` and its pager, `E` opens `$EDITOR` and reloads afterwards |
 | `vim` | A key whose meaning depends on the keys before it. Modal editing is the smallest realistic thing that cannot be written as a flat list of bindings, and what replaces it is three fields - the mode, the count typed so far, and the keys of a command that is not finished yet. It is also the one example that still builds `$k` into a string, because every key is appended to the pending command and the result looked up whole. Also what an application owns when the library stops: there is no editable multi-line component, so the buffer and the cursor are the model's |
 
 The stateful components - `TextInput`, `TextArea`, `ListView`, `Viewport` - are
