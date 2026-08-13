@@ -177,6 +177,28 @@ func boxChar*(top = lwNone, right = lwNone, bottom = lwNone,
   ## built in place, which is how most call sites want it.
   boxChar(quad(top, right, bottom, left))
 
+func lineWeightOf*(glyph: string): LineWeight =
+  ## The weight of a plain line glyph — `─ ━ ═` and `│ ┃ ║` — and `lwNone` for
+  ## everything else, including corners, junctions and anything that is not a
+  ## box-drawing character at all.
+  ##
+  ## This is the *partial* inverse of `boxChar <#boxChar,Quad>`_, and partial on
+  ## purpose. A full one is not possible: the degradation ladder means two quads
+  ## can come back as the same glyph, so a general `glyph -> Quad` has to choose,
+  ## and the six here are the entries where there is nothing to choose between.
+  ## They are also what a caller actually asks: *is this border drawn in lines,
+  ## and how heavy are they* — which is the question that has to be answered
+  ## before a junction can be computed against it, as `Table.headerWeight` does.
+  ##
+  ## Derived from the table rather than typed, so it cannot drift from it.
+  ##
+  ## `lwNone` is the honest answer for a border made of half blocks or `+`, and
+  ## callers should read it as "not expressible as an arm", not as "no line".
+  for w in [lwThin, lwHeavy, lwDouble]:
+    if glyph == boxChar(top = w, bottom = w) or
+       glyph == boxChar(right = w, left = w): return w
+  lwNone
+
 static:
   # What a bad table breaks, checked at compile time for the reason `width.nim`
   # checks its ranges there: every failure below produces output of exactly the
@@ -213,3 +235,11 @@ static:
                            quad(top = lwThin, bottom = lwThin))) == "┼"
   doAssert combine(quad(top = lwHeavy), quad(top = lwNone)).top == lwHeavy
   doAssert combine(quad(top = lwHeavy), quad(top = lwThin)).top == lwThin
+
+  # The partial inverse agrees with the table in both directions, for the six
+  # glyphs it claims and for a sample of the shapes it must decline.
+  for w in [lwThin, lwHeavy, lwDouble]:
+    doAssert lineWeightOf(boxChar(top = w, bottom = w)) == w
+    doAssert lineWeightOf(boxChar(right = w, left = w)) == w
+  for s in ["┼", "┌", "╬", "▌", "+", " ", "", "x"]:
+    doAssert lineWeightOf(s) == lwNone

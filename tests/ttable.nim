@@ -112,6 +112,7 @@ suite "table appearance":
   test "borderless tables are still rectangular":
     var t = sample()
     t.showBorder = false
+    t.columnRules = false
     t.headerRule = false
     for w in [50, 34, 20]:
       for line in t.lines(w):
@@ -127,6 +128,7 @@ suite "table appearance":
     # lays out at the rule's width.
     var t = sample()
     t.showBorder = false
+    t.columnRules = false
     for padding in [0, 1, 2]:
       t.padding = padding
       let ls = t.lines()
@@ -142,9 +144,100 @@ suite "table appearance":
     var t = table([column("a", width = 4), column("b", width = 6)])
     t.add("x", "y")
     t.showBorder = false
+    t.columnRules = false
     t.padding = 1
     check t.totalWidth == 4 + 6 + 4
     for line in t.lines(): check displayWidth(line) == 14
+
+  test "the frame and the column rules are two switches, not one":
+    # Four combinations, and each has to be rectangular at its *own* natural
+    # width — which is the assertion that catches a chrome count reached from
+    # one switch when it depends on both.
+    for frame in [true, false]:
+      for rules in [true, false]:
+        var t = sample()
+        t.showBorder = frame
+        t.columnRules = rules
+        checkpoint "frame " & $frame & ", rules " & $rules
+        for line in t.lines():
+          check displayWidth(line) == t.totalWidth
+        for w in [50, 34, 20]:
+          for line in t.lines(w):
+            check displayWidth(line) == w
+
+  test "the four combinations are four different widths":
+    # The same columns cost 2 for a frame and n-1 for the separators, and
+    # dropping either has to actually recover the columns it was using.
+    proc widthOf(frame, rules: bool): int =
+      var t = sample()
+      t.showBorder = frame
+      t.columnRules = rules
+      t.totalWidth
+    let n = sample().columns.len
+    check widthOf(true, true) == widthOf(false, false) + 2 + n - 1
+    check widthOf(true, false) == widthOf(false, false) + 2
+    check widthOf(false, true) == widthOf(false, false) + n - 1
+
+  test "a row rule goes between rows and nowhere else":
+    var t = sample()
+    t.rowRule = true
+    let ls = t.lines()
+    # frame, header, header rule, three rows with two rules between, frame
+    check ls.len == 3 + 3 + 2 + 1
+    for line in ls: check displayWidth(line) == t.totalWidth
+    check ls[3].startsWith("│") or ls[3].contains("api")   # first row, not a rule
+    check "┼" in ls[4]                                     # then a rule
+    check "┼" notin ls[^2]                                 # not under the last row
+
+  test "row rules honour the same two switches":
+    for frame in [true, false]:
+      for rules in [true, false]:
+        var t = sample()
+        t.rowRule = true
+        t.showBorder = frame
+        t.columnRules = rules
+        checkpoint "frame " & $frame & ", rules " & $rules
+        for line in t.lines():
+          check displayWidth(line) == t.totalWidth
+
+  test "a header weight computes its junctions rather than swapping a glyph":
+    # The whole point: `├━━━┼━━━┤` is what setting `innerHorizontal` heavy gets
+    # you, and `┝━━━┿━━━┥` is what a heavy rule meeting a thin frame is.
+    var t = sample()
+    t.headerWeight = lwHeavy
+    let rule = t.lines()[2]
+    check "┝" in rule and "┿" in rule and "┥" in rule
+    check "├" notin rule and "┼" notin rule and "┤" notin rule
+    for line in t.lines(): check displayWidth(line) == t.totalWidth
+
+    t.headerWeight = lwDouble
+    let dbl = t.lines()[2]
+    check "╞" in dbl and "╪" in dbl and "╡" in dbl
+
+  test "a header weight is honoured with either switch off":
+    var t = sample()
+    t.headerWeight = lwHeavy
+    t.showBorder = false
+    t.columnRules = false
+    let ls = t.lines()
+    check ls[1] == t.borderStyle.render("━".repeat(t.totalWidth))
+    for line in ls: check displayWidth(line) == t.totalWidth
+
+    t.columnRules = true                       # crosses, still no ends
+    check "┿" in t.lines()[1]
+    for line in t.lines(): check displayWidth(line) == t.totalWidth
+
+  test "a border with no line weight keeps its own header rule":
+    # Half blocks, `+` and spaces have no arm for a junction to meet, so the
+    # algebra has nothing to say and the border's own glyphs are the answer.
+    for b in [OuterHalfBlockBorder, InnerHalfBlockBorder, AsciiBorder,
+              HiddenBorder, EvenBlockBorder]:
+      var plain = sample()
+      plain.borderChars = b
+      var weighted = plain
+      weighted.headerWeight = lwHeavy
+      checkpoint $b.leftEdge
+      check weighted.render() == plain.render()
 
   test "hiding the header drops exactly one row":
     var t = sample()

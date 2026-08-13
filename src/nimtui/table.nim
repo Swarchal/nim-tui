@@ -19,6 +19,38 @@
 ## Columns size themselves to their content unless given a fixed `width`. Pass a
 ## total width to `render` and the flexible columns are shrunk or stretched to
 ## hit it exactly, so a table can fill a pane whatever the terminal size.
+##
+## How much of the grid is *drawn* is four switches, and between them they cover
+## the looks a table is usually asked for:
+##
+## ```nim
+## t.showBorder = false     # the outer frame
+## t.columnRules = false    # the vertical rules between columns
+## t.rowRule = true         # a horizontal rule between every pair of rows
+## t.headerWeight = lwHeavy # the rule under the header, heavier than the rest
+## ```
+##
+## The frame and the column rules are deliberately *two* switches. Turning both
+## off is the quiet look that suits dense data — no verticals at all, one rule
+## under the header, which is where the eye needs it:
+##
+## ```text
+##  service      reqs     p99   status
+## ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━      t.showBorder = false
+##  api-gateway  128,986  80.0    ok         t.columnRules = false
+##  auth          41,652  66.3    ok         t.headerWeight = lwHeavy
+## ```
+##
+## `headerWeight` computes its junctions rather than swapping a glyph, so a heavy
+## rule inside a thin frame is `┝━━━┿━━━┥` and not `├━━━┼━━━┤`. It is
+## `boxdraw <boxdraw.html>`_ doing the work, so every pairing of thin, heavy and
+## double is available; a border with no line weight to meet — half blocks, `+`,
+## spaces — keeps its own rule, since the border was chosen for that frame and
+## the algebra was not.
+##
+## Which border to draw them *with* is a separate question, and
+## `ruledBorder <layout.html#ruledBorder,LineWeight,LineWeight>`_ answers it for
+## a frame heavier than its rules.
 
 import std/strutils
 import ./[ansi, style, spans, layout]
@@ -37,9 +69,13 @@ type
     rows*: seq[seq[string]]
     borderChars*: Border
     borderStyle*: Style
-    showBorder*: bool
+    showBorder*: bool        ## the outer frame
+    columnRules*: bool       ## the vertical rules *between* columns
     showHeader*: bool
     headerRule*: bool        ## a rule between the header and the body
+    headerWeight*: LineWeight
+      ## the weight of that rule, `lwNone` to use the border's own interior one
+    rowRule*: bool           ## a rule between every pair of body rows
     padding*: int            ## blank cells either side of every cell's content
     zebra*: Style            ## laid over alternate rows; empty turns it off
     rowStyles*: seq[Style]   ## per-row overrides, sparse — shorter than `rows` is fine
@@ -54,7 +90,7 @@ proc column*(header: string, width = 0, align = aLeft, headerAlign = aLeft,
 
 proc table*(columns: openArray[Column], border = RoundedBorder): Table =
   Table(columns: @columns, borderChars: border, showBorder: true,
-        showHeader: true, headerRule: true, padding: 1,
+        columnRules: true, showHeader: true, headerRule: true, padding: 1,
         borderStyle: Style().faint())
 
 proc add*(t: var Table, cells: varargs[string]) =
@@ -103,10 +139,13 @@ proc columnWidths*(t: Table, total = 0): seq[int] =
       result[i] = w
   if total <= 0: return
 
-  # Chrome is everything that is not cell content: the outer frame, one
+  # Chrome is everything that is not cell content: the two frame columns, one
   # separator between each pair of columns, and the padding on both sides of
-  # every cell.
-  let chrome = (if t.showBorder: n + 1 else: 0) + n * 2 * t.padding
+  # every cell. The frame and the separators are counted apart because they are
+  # switched apart — a table can have either, both or neither.
+  let chrome = (if t.showBorder: 2 else: 0) +
+               (if t.columnRules: n - 1 else: 0) +
+               n * 2 * t.padding
   let budget = total - chrome
   if budget <= 0: return
 
@@ -162,32 +201,57 @@ proc rule(t: Table, widths: seq[int], left, mid, right: string,
   ## border's interior rule — the top and bottom rules pass their own, since a
   ## half-block frame does not use the same glyph above and below, and what is
   ## left defaulting is the header rule, which is interior by definition.
+  # A rule lines up with the row above it, so a junction is drawn exactly where
+  # that row has a separator and nowhere else. Both switches are read here rather
+  # than at the call site, so a third caller cannot get it wrong: emitting an end
+  # where there is no frame, or a `┼` where there is no `│` to cross, is not a
+  # stray glyph but a rule wider than every other line in the table — and nothing
+  # pads a block to its *narrowest* line, so the whole thing then lays out at the
+  # rule's width.
   let h = if edge.len > 0: edge else: t.borderChars.innerHorizontalEdge
-  if not t.showBorder:
-    # A rule lines up with the row above it, and a row with no frame has no
-    # separators for it to line up *with* — so there is nothing to draw a
-    # junction at, and nothing outside the first and last cell either. Emitting
-    # them anyway put a `┼` where no `│` was and made this rule `columns + 1`
-    # wider than every other line in the table, which is the frame-
-    # desynchronising failure rather than a stray glyph: nothing pads a block to
-    # its *narrowest* line, so the whole thing lays out at the rule's width.
-    #
-    # Only the header rule reaches this, the top and bottom being drawn under
-    # `showBorder` already, and it is checked here rather than at the call site
-    # so a third caller cannot get it wrong.
-    var s = ""
-    for w in widths: s.add h.repeat(w + 2 * t.padding)
-    return t.borderStyle.render(s)
-  let
-    l = if left.len > 0: left else: h
-    m = if mid.len > 0: mid else: h
-    r = if right.len > 0: right else: h
-  var s = l
+  var s = ""
+  if t.showBorder: s.add(if left.len > 0: left else: h)
   for i, w in widths:
-    if i > 0: s.add m
+    if i > 0 and t.columnRules: s.add(if mid.len > 0: mid else: h)
     s.add h.repeat(w + 2 * t.padding)
-  s.add r
+  if t.showBorder: s.add(if right.len > 0: right else: h)
   t.borderStyle.render(s)
+
+proc interiorRule(t: Table, widths: seq[int]): string =
+  ## A rule across the table at the border's own interior weight — the header
+  ## rule's default, and every row rule.
+  t.rule(widths,
+         if t.showBorder: t.borderChars.teeRight else: "",
+         t.borderChars.cross,
+         if t.showBorder: t.borderChars.teeLeft else: "")
+
+proc headerRuleLine(t: Table, widths: seq[int]): string =
+  ## The rule under the header, at `headerWeight` when one is asked for.
+  ##
+  ## The three junctions are *computed* rather than taken from the border, which
+  ## is what makes this more than a glyph swap: a heavier rule meeting a thin
+  ## frame is `┝ ┿ ┥`, and those exist for every pairing `boxdraw` can express.
+  ## Setting `innerHorizontal` heavy instead gets the run right and leaves the
+  ## junctions thin, which is the mismatch this is here to avoid.
+  if t.headerWeight == lwNone: return t.interiorRule(widths)
+  let
+    frameL = lineWeightOf(t.borderChars.leftEdge)
+    frameR = lineWeightOf(t.borderChars.rightEdge)
+    column = lineWeightOf(t.borderChars.innerVerticalEdge)
+  # A border whose sides are half blocks, `+` or spaces has no arm weight to
+  # meet, so there is no junction to compute and the border's own glyph is the
+  # better answer — it was chosen for that frame and the algebra was not. Only
+  # the parts actually drawn are required to be lines: a borderless table needs
+  # nothing of the frame, and one without column rules nothing of the separator.
+  if (t.showBorder and (frameL == lwNone or frameR == lwNone)) or
+     (t.columnRules and column == lwNone):
+    return t.interiorRule(widths)
+  let w = t.headerWeight
+  t.rule(widths,
+         boxChar(top = frameL, bottom = frameL, right = w),
+         boxChar(top = column, bottom = column, left = w, right = w),
+         boxChar(top = frameR, bottom = frameR, left = w),
+         boxChar(left = w, right = w))
 
 proc renderRow(t: Table, widths: seq[int], cells: openArray[string],
                styles: openArray[Style], aligns: openArray[Align],
@@ -204,9 +268,11 @@ proc renderRow(t: Table, widths: seq[int], cells: openArray[string],
   var line: Spans
   for i, w in widths:
     # The frame and the column separators are three different glyphs on a border
-    # whose sides differ; on every other border they are the same one.
-    if t.showBorder and i == 0: line.add vLeft
-    elif t.showBorder: line.add v
+    # whose sides differ; on every other border they are the same one. They are
+    # also two different switches, so this is two conditions and not one.
+    if i == 0:
+      if t.showBorder: line.add vLeft
+    elif t.columnRules: line.add v
     # The padding carries the cell's own style, so a row background runs
     # unbroken between the separators instead of striping only behind the text.
     let st = styles[i].merge(rowStyle)
@@ -244,10 +310,7 @@ proc render*(t: Table, width = 0): string =
       aligns[i] = c.headerAlign
     lines.add t.renderRow(widths, headers, styles, aligns, Style())
     if t.headerRule:
-      lines.add t.rule(widths,
-                       if t.showBorder: t.borderChars.teeRight else: "",
-                       t.borderChars.cross,
-                       if t.showBorder: t.borderChars.teeLeft else: "")
+      lines.add t.headerRuleLine(widths)
 
   var
     cells = newSeq[string](n)
@@ -257,6 +320,10 @@ proc render*(t: Table, width = 0): string =
     styles[i] = c.style
     aligns[i] = c.align
   for r in 0 ..< t.rows.len:
+    # Between rows, never above the first or below the last: those two are the
+    # header rule and the frame's own bottom, and a table that draws its own
+    # there has two rules where it means one.
+    if t.rowRule and r > 0: lines.add t.interiorRule(widths)
     for i in 0 ..< n: cells[i] = t.cell(r, i)
     var rs = Style()
     if r < t.rowStyles.len and not t.rowStyles[r].isEmpty: rs = t.rowStyles[r]
@@ -277,4 +344,5 @@ proc totalWidth*(t: Table): int =
   let n = t.columns.len
   if n == 0: return 0
   for w in t.columnWidths(): result += w + 2 * t.padding
-  if t.showBorder: result += n + 1
+  if t.showBorder: result += 2
+  if t.columnRules: result += n - 1

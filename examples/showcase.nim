@@ -231,6 +231,13 @@ proc tablePane(m: Model): string =
   # `╤ ╧ ╟ ╢ ┼`, and no built-in `Border` carries them. Written out by hand it is
   # eleven glyphs and the wrong one is invisible until someone looks closely.
   tbl.borderChars = ruledBorder(lwDouble, lwThin)
+  # And a third weight, on the one rule that separates two *kinds* of row. The
+  # junctions are computed the same way and land on glyphs the border does not
+  # carry either: `╠` and `╣` where the double rule meets the double frame, `╪`
+  # where it crosses a thin column rule. Setting `innerHorizontal` to `═` instead
+  # would draw the run and leave those three thin, which is the mismatch
+  # `headerWeight` exists to avoid.
+  tbl.headerWeight = lwDouble
   tbl.borderStyle = t.borderStyle
   tbl.columns[0].headerStyle = t.titleStyle
   tbl.columns[1].headerStyle = t.titleStyle

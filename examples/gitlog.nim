@@ -727,7 +727,8 @@ proc filesPane(m: Model, r: Rect): string =
                    column("−", align = aRight, minWidth = 3),
                    column("churn", width = max(inner.w div 5, 6))],
                   border = HiddenBorder)
-  tbl.showBorder = false
+  tbl.showBorder = false         # no frame, and no rules between the columns
+  tbl.columnRules = false        # either — they are two switches, not one
   tbl.headerRule = false         # the rule under a hidden border is a blank row
   tbl.padding = 1
   for f in m.files:
