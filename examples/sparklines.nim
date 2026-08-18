@@ -260,7 +260,12 @@ proc dataTable(m: Model, p: Plan): (string, int) =
   # re-arms the row's style after any reset in the cell's own escapes — without
   # that the stripe would stop at the first glyph and leave the rest of the row
   # bare.
-  t.zebra = Style().bg(T.border.darken(0.45))
+  # `darken` subtracts lightness in HSL and this border sits near L=0.33, so
+  # anything past about 0.3 clips to pure black — which is what this was, a stripe
+  # of `#000000` rather than the tint it reads as in the source. `0.14` is
+  # `rgb(41,48,54)`: visible against a dark background, and well clear of the
+  # selected row below, which has to stay the more prominent of the two.
+  t.zebra = Style().bg(T.border.darken(0.14))
 
   for s in m.series:
     let
@@ -276,7 +281,10 @@ proc dataTable(m: Model, p: Plan): (string, int) =
     t.rows.add cells
 
   t.rowStyles = newSeq[Style](t.rows.len)
-  t.rowStyles[m.sel] = Style().bg(T.border.darken(0.15)).bold()
+  # Brighter than the zebra rather than darker: at `0.15` this was a shade
+  # apart from a stripe that had clipped to black, which is why the two could
+  # be so close. `0.06` is `rgb(59,69,77)`.
+  t.rowStyles[m.sel] = Style().bg(T.border.darken(0.06)).bold()
 
   # `render()` at its natural width rather than `render(width)`: the widths above
   # already sum to it, and passing a total invites the shrink pass — which picks

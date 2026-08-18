@@ -262,7 +262,12 @@ proc dataTable(m: Model, p: Plan): (string, int) =
   var t = table(columns, SquareBorder)
   t.borderStyle = T.borderStyle
   for i in 0 .. t.columns.high: t.columns[i].headerStyle = T.titleStyle
-  t.zebra = Style().bg(T.border.darken(0.45))
+  # `darken` subtracts lightness in HSL and this border sits near L=0.33, so
+  # anything past about 0.3 clips to pure black — which is what this was, a stripe
+  # of `#000000` rather than the tint it reads as in the source. `0.14` is
+  # `rgb(41,48,54)`: visible against a dark background, and well clear of the
+  # selected row below, which has to stay the more prominent of the two.
+  t.zebra = Style().bg(T.border.darken(0.14))
 
   for s in m.series:
     var cells = @[$s.shape]
@@ -270,7 +275,10 @@ proc dataTable(m: Model, p: Plan): (string, int) =
     t.rows.add cells
 
   t.rowStyles = newSeq[Style](t.rows.len)
-  t.rowStyles[m.sel] = Style().bg(T.border.darken(0.15)).bold()
+  # Brighter than the zebra rather than darker: at `0.15` this was a shade
+  # apart from a stripe that had clipped to black, which is why the two could
+  # be so close. `0.06` is `rgb(59,69,77)`.
+  t.rowStyles[m.sel] = Style().bg(T.border.darken(0.06)).bold()
   # Natural width, not `render(width)`: the widths above already sum to it, and
   # passing a total invites the shrink pass onto the widest column — a chart.
   (t.render(), t.rows.len + 4)

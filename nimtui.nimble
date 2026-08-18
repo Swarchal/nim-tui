@@ -2,7 +2,7 @@ import std/[os, strutils]
 
 # Package
 
-version       = "0.3.0"
+version       = "0.4.0"
 author        = "Scott Warchal"
 description   = "A Nim library for building terminal UI applications, inspired by Bubble Tea"
 license       = "MIT"

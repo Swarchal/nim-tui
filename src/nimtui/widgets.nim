@@ -40,6 +40,14 @@
 ## That argument is required rather than defaulted, so the uncoloured calls above
 ## stay unambiguous — a `Gradient` with a default value would make `gauge(0.5, 20)`
 ## match both overloads.
+##
+## A coloured `sparkline` or `barChart` paints a *completely* filled cell as a
+## space with the colour in the **background** instead of drawing `█` in the
+## foreground. A background fill covers the whole cell by definition, where a
+## glyph covers as much of it as the font says: plenty of fonts draw `█` a hair
+## short of the cell box, which shows as a thin seam of the terminal's own
+## background between one filled cell and the next — a bar striped into blocks
+## rather than a bar. `solid = false` on either restores the glyph.
 
 import std/[strutils, math]
 import ./[ansi, style, spans]
@@ -93,6 +101,34 @@ proc gauge*(fraction: float, width: int, fill: Gradient, empty = "░",
   ## of bare `▌` would draw a bar half the width it means. Under `cpAnsi16` the
   ## two halves often round to the same colour, which costs nothing — that is a
   ## solid cell, exactly what the colours say.
+  ##
+  ## An `emptyStyle` carrying a **background** — a track colour — is also put
+  ## behind the fractional cell at the bar's end, so the bar ends *on* the track.
+  ## Without one that cell's remainder is the terminal's own background, and since
+  ## every half-block cell is painted edge to edge, the bar then appears to stop
+  ## short of a track it has not reached: a gap up to seven eighths of a cell
+  ## wide.
+  ##
+  ## ```nim
+  ## echo gauge(0.62, 30, HeatGradient,
+  ##            emptyStyle = Style().faint().bg(hex"#2a2a35"))
+  ## ```
+  ##
+  ## Pass `empty = " "` with it. A `░` track reads as its background *plus* the
+  ## dots, which is lighter than the background alone — and the fractional cell
+  ## can only be a glyph over the background, so a textured track meets the bar's
+  ## end at a visibly darker step: the same gap in the same place, a shade rather
+  ## than a hole. A solid track and that cell are the same colour and meet
+  ## exactly. Keep `░` for the case with no track colour at all, since a
+  ## background paints nothing under `cpNoColor` and a solid track would be
+  ## invisible there — which is a choice the caller makes on
+  ## `colorProfile <style.html#colorProfile>`_, as both examples do.
+  ##
+  ## Pick that colour *lighter* than the background it sits on. A track darker
+  ## than the pane reads as a hole punched in it rather than as the part of the
+  ## bar not yet reached, and the fractional cell — mostly track, by definition —
+  ## is where it shows worst. `darken` is the trap: it subtracts lightness in HSL,
+  ## so `border.darken(0.35)` on any of the built-in themes clips to `#000000`.
   if width <= 0: return ""
   let
     f = clamp(fraction, 0.0, 1.0)
@@ -110,11 +146,21 @@ proc gauge*(fraction: float, width: int, fill: Gradient, empty = "░",
   if used < width:
     let eighth = (rest * 8).int
     if eighth > 0:
-      # Foreground only, even under half-block: a partial block already ends
-      # part way across its cell, and a background would paint the rest of it —
-      # which is the empty part of the bar.
+      # The bar's colour as a foreground only — a partial block already ends part
+      # way across its cell, so a background of the *bar's* colour would paint
+      # the empty remainder and over-report the value by up to seven eighths.
+      #
+      # The remainder is the **track's** background instead, when the track has
+      # one. That is the same cell said twice: the glyph is the bar's end and the
+      # background behind it is what the bar has not reached yet, which is
+      # exactly what the `empty` cells after it are. Without it the cell's
+      # remainder is the terminal's own background, and against a bar whose whole
+      # cells are painted edge to edge — which every half-block cell is — that
+      # reads as a gap between the end of the bar and the track rather than as
+      # the bar ending. `emptyStyle` with no background leaves the bytes as they
+      # were, so a gauge over the terminal's own background is unaffected.
       line.add(PartialBlocks[eighth],
-               Style().fg(colours[if half: 2 * used else: used]))
+               Style().fg(colours[if half: 2 * used else: used]).bg(emptyStyle.bgc))
       inc used
     if used < width:
       line.add(empty.repeat(width - used), emptyStyle)
@@ -213,6 +259,29 @@ func oneColumn(s: string): string =
   ## runs once per call, but so does the reasoning that makes it free.
   if displayWidth(s) == 1: s else: padVisible(truncateVisible(s, 1), 1)
 
+func paintedCell*(c: Color): Style =
+  ## The style a *completely* filled chart cell is drawn with under `solid`: the
+  ## colour in the **background**, behind a space, rather than `█` in front of a
+  ## background that is not the caller's to set.
+  ##
+  ## The two are the same picture in principle and not in practice. A background
+  ## fill covers the cell box exactly, because the terminal paints it; a glyph
+  ## covers as much of the box as the font's outline does, and a great many fonts
+  ## draw `█` a fraction short — which shows as a hairline of the terminal's own
+  ## background at every cell edge, so a bar reads as a column of separate blocks
+  ## and two neighbouring columns of a chart have a seam between them. Nothing
+  ## about the terminal or the library can close that gap: the ink is the font's.
+  ##
+  ## Only a *full* cell can be painted this way. A partial one — the top cell of
+  ## a bar, every cell of a rising sparkline — has to stay a glyph, since that is
+  ## where the sub-cell height lives, and its own edges are the bar's edge rather
+  ## than a join between two filled cells.
+  ##
+  ## Attributes are dropped rather than carried over from a bar's style: `aBold`
+  ## means nothing to a space, and `aUnderline` or `aStrike` would draw a rule
+  ## through the cell this exists to fill evenly.
+  Style().bg(c)
+
 proc sparkLevels(values: openArray[float], width: int):
     tuple[pad: int, levels: seq[int]] =
   ## Glyph indices (0..7) for the trailing `width` values, plus the left padding
@@ -256,14 +325,18 @@ proc sparkline*(values: openArray[float], width: int, absent = " "): string =
     result.add(if lv < 0: gap else: SparkChars[lv])
 
 proc sparkline*(values: openArray[float], width: int, colours: Gradient,
-                absent = " "): string =
+                absent = " ", solid = true): string =
   ## `sparkline` with each glyph coloured by its own height, so the colour says
   ## the same thing as the glyph and a tall spike is legible at a glance even
   ## where the eighth-block steps are hard to tell apart.
+  ##
+  ## `solid` paints a full-height cell as a space with the colour behind it
+  ## rather than as `█` in front of it — see `paintedCell`_.
   if width <= 0 or values.len == 0: return ""
   let
     (pad, levels) = sparkLevels(values, width)
     gap = oneColumn(absent)
+    paint = solid and colorProfile() != cpNoColor
   var line: Spans
   if pad > 0: line.add spaces(pad)
   # A glyph's colour depends only on its level, and there are eight of those, so
@@ -282,7 +355,10 @@ proc sparkline*(values: openArray[float], width: int, colours: Gradient,
       line.add gap                     # a gap has no height, so no colour
       continue
     if sampled[lv].kind == ckDefault: sampled[lv] = colours.at(lv.float / 7.0)
-    line.add(SparkChars[lv], Style().fg(sampled[lv]))
+    if paint and lv == SparkChars.high:
+      line.add(" ", paintedCell(sampled[lv]))
+    else:
+      line.add(SparkChars[lv], Style().fg(sampled[lv]))
   line.render()
 
 proc chartNorms(values: openArray[float], start: int, lo, hi: float,
@@ -360,16 +436,22 @@ proc barChart*(values: openArray[float], width, height: int,
     result.add line
 
 proc barChart*(values: openArray[float], width, height: int, colours: Gradient,
-               lo = 0.0, hi = 0.0, absent = " "): seq[string] =
+               lo = 0.0, hi = 0.0, absent = " ", solid = true): seq[string] =
   ## `barChart` with each column coloured by its own value, so a bar's height
   ## and its colour carry the same information — which is what keeps a chart
   ## readable once it is only a few rows tall.
+  ##
+  ## `solid` paints the whole cells of a bar with the colour in the background
+  ## rather than drawing `█` in front — see `paintedCell`_, which is where the
+  ## seam that removes is described. The topmost cell of a bar keeps its glyph
+  ## either way, since that is what says how far up the cell the bar got.
   if width <= 0 or height <= 0: return @[]
   let
     start = max(values.len - width, 0)
     norms = chartNorms(values, start, lo, hi, 1.0 / (height * 8).float)
     pad = max(width - norms.len, 0)
     gap = oneColumn(absent)
+    paint = solid and colorProfile() != cpNoColor
   # Sampled once for the whole chart rather than per cell: the same column has
   # the same colour in every row, so re-deriving it `height` times is wasted.
   # A gap has no value to sample at, and `at(NaN)` is not a question with an
@@ -388,8 +470,48 @@ proc barChart*(values: openArray[float], width, height: int, colours: Gradient,
       let eighths = clamp((n * (height * 8).float).round.int - floorEighths, 0, 8)
       if eighths == 0:
         line.add " "
+      elif eighths == 8 and paint:
+        line.add(" ", paintedCell(colColours[i]))
       else:
         line.add(SparkChars[eighths - 1], Style().fg(colColours[i]))
+    result.add line.render()
+
+proc barChart*(values: openArray[float], width, height: int, bar: Style,
+               lo = 0.0, hi = 0.0, absent = " ", solid = true): seq[string] =
+  ## `barChart` in one colour, drawn by the widget rather than by the caller.
+  ##
+  ## The same chart as the plain overload with `bar.render` applied to each row,
+  ## except that under `solid` a whole cell is painted with `bar`'s *foreground*
+  ## as its background — which is the seam `paintedCell`_ describes, and is not
+  ## something a caller styling a finished row can do for itself, since by then
+  ## the full cells and the partial ones are indistinguishable glyphs.
+  ##
+  ## A `bar` with no foreground colour has nothing to paint with, so that case
+  ## falls back to the glyphs whatever `solid` says.
+  if width <= 0 or height <= 0: return @[]
+  let
+    start = max(values.len - width, 0)
+    norms = chartNorms(values, start, lo, hi, 1.0 / (height * 8).float)
+    pad = max(width - norms.len, 0)
+    gap = oneColumn(absent)
+    paint = solid and bar.fgc.kind != ckDefault and colorProfile() != cpNoColor
+    filled = paintedCell(bar.fgc)
+  result = newSeqOfCap[string](height)
+  for row in 0 ..< height:
+    let floorEighths = (height - 1 - row) * 8
+    var line: Spans
+    if pad > 0: line.add spaces(pad)
+    for n in norms:
+      if n.isGap:
+        line.add gap
+        continue
+      let eighths = clamp((n * (height * 8).float).round.int - floorEighths, 0, 8)
+      if eighths == 0:
+        line.add " "
+      elif eighths == 8 and paint:
+        line.add(" ", filled)
+      else:
+        line.add(SparkChars[eighths - 1], bar)
     result.add line.render()
 
 type

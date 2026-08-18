@@ -347,6 +347,10 @@ suite "a gap is not a zero":
     check sparkline(values, 6, HeatGradient, "·") == sparkline(values, 6, "·")
     check barChart(values, 6, 3, HeatGradient, absent = "·") ==
           barChart(values, 6, 3, absent = "·")
+    # Including the paint: with nothing to paint with, a full cell is `█` again,
+    # since a row of bare spaces would be a chart with no bars in it.
+    check barChart(values, 6, 3, Style().fg(hex"#ff0000"), absent = "·") ==
+          barChart(values, 6, 3, absent = "·")
     setColorProfile(saved)
 
 suite "gradient widgets":
@@ -400,6 +404,26 @@ suite "gradient widgets":
     check "38;2;0;0;0" in short
     check "38;2;0;0;0" in long
 
+  test "the bar's end sits on the track rather than in a hole in it":
+    # `halfBlock = false`, so the only background the string can carry is the
+    # track's — which is what makes "the fractional cell has one" assertable.
+    let
+      track = Style().bg(hex"#203040")
+      bare = gauge(0.53, 8, HeatGradient, halfBlock = false)
+      onTrack = gauge(0.53, 8, HeatGradient, empty = " ", emptyStyle = track,
+                      halfBlock = false)
+    check "48;2;" notin bare                 # no track, so no background at all
+    check "48;2;32;48;64m▏" in onTrack        # the bar's end, over the track
+    check onTrack.stripAnsi == "████▏   "     # unchanged: the paint is not a cell
+    check bare.stripAnsi == "████▏░░░"
+    check displayWidth(onTrack) == 8
+    # And the same under half-block, where the gap is the visible one: every
+    # filled cell is painted edge to edge, so a fractional cell with no
+    # background is a hole between the bar and the track.
+    let halves = gauge(0.53, 8, HeatGradient, empty = " ", emptyStyle = track)
+    check "48;2;32;48;64m▏" in halves
+    check displayWidth(halves) == 8
+
   test "an empty and a full gauge are still the right width":
     check displayWidth(gauge(0.0, 10, CoolGradient)) == 10
     check displayWidth(gauge(1.0, 10, CoolGradient)) == 10
@@ -408,18 +432,59 @@ suite "gradient widgets":
   test "a coloured sparkline matches the plain one glyph for glyph":
     let values = @[1.0, 5.0, 3.0, 9.0, 2.0, 7.0, 4.0]
     for w in [3, 7, 20]:
-      check sparkline(values, w, CoolGradient).stripAnsi ==
+      # `solid = false`, since a painted full cell is a space by design — the
+      # equality being pinned here is of the *glyphs*, which is what that flag
+      # turns off. The painted form is checked below.
+      check sparkline(values, w, CoolGradient, solid = false).stripAnsi ==
             sparkline(values, w)
       check displayWidth(sparkline(values, w, CoolGradient)) == w
+      check displayWidth(sparkline(values, w, CoolGradient, solid = false)) == w
 
   test "a coloured barChart matches the plain one cell for cell":
     let values = @[1.0, 4.0, 9.0, 3.0, 7.0]
     let plain = barChart(values, 12, 5)
-    let painted = barChart(values, 12, 5, HeatGradient)
+    let painted = barChart(values, 12, 5, HeatGradient, solid = false)
     check painted.len == plain.len
     for i in 0 ..< plain.len:
       check painted[i].stripAnsi == plain[i]
       check displayWidth(painted[i]) == 12
+
+  test "a full cell is painted rather than drawn":
+    # The seam this removes is the font's, not the terminal's: `█` covers as much
+    # of the cell as its outline does, and a background fill covers all of it. So
+    # what is asserted is that a *whole* cell carries a background and no glyph,
+    # and that a partial one still carries the glyph — the height lives there.
+    let bars = barChart(@[100.0, 40.0], 2, 2, HeatGradient, lo = 0.0, hi = 100.0)
+    check bars[1].stripAnsi == " ▆"     # the full column painted, the partial drawn
+    check "48;2;" in bars[1]            # a background, which is the paint
+    check "█" notin bars.join("")
+    for row in bars: check displayWidth(row) == 2
+    # Off, it is the old chart exactly: one foreground per cell, no background.
+    let drawn = barChart(@[100.0, 40.0], 2, 2, HeatGradient,
+                         lo = 0.0, hi = 100.0, solid = false)
+    check drawn[1].stripAnsi == "█▆"
+    check "48;2;" notin drawn.join("")
+    # And the same for a sparkline, whose full cell is its top level.
+    check sparkline(@[1.0, 2.0], 2, HeatGradient).stripAnsi == "▁ "
+    check "48;2;" in sparkline(@[1.0, 2.0], 2, HeatGradient)
+    check sparkline(@[1.0, 2.0], 2, HeatGradient, solid = false).stripAnsi == "▁█"
+
+  test "a one-colour barChart is the plain one with the paint applied":
+    let values = @[1.0, 4.0, 9.0, 3.0, 7.0]
+    let
+      plain = barChart(values, 12, 5)
+      styled = barChart(values, 12, 5, Style().fg(hex"#ff0000"))
+      drawn = barChart(values, 12, 5, Style().fg(hex"#ff0000"), solid = false)
+    check drawn.len == plain.len
+    for i in 0 ..< plain.len:
+      check drawn[i].stripAnsi == plain[i]
+      check displayWidth(styled[i]) == 12
+      check displayWidth(drawn[i]) == 12
+    check "48;2;255;0;0" in styled.join("")
+    check "48;2;" notin drawn.join("")
+    # A style with no foreground has nothing to paint with, so it stays glyphs.
+    let bold = barChart(values, 12, 5, Style().bold())
+    for i in 0 ..< plain.len: check bold[i].stripAnsi == plain[i]
 
   test "a coloured barChart handles the degenerate inputs the plain one does":
     check barChart(@[], 10, 4, HeatGradient).len == 4

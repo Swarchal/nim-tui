@@ -189,8 +189,40 @@ proc metricsPane(m: Model): string =
     let
       cur = if series.len == 0: 0.0 else: series[^1]
       barWidth = max(w - 12 - 10, 4)
+    # A track that is a *painted* colour rather than `░` on the terminal's own
+    # background, which is what makes the bar read as one strip. Every half-block
+    # cell of the bar is painted edge to edge, and `gauge` puts the track's
+    # background behind the fractional cell at the end of the bar too, so bar,
+    # end and track meet with nothing of the terminal's background between them.
+    #
+    # Both parts of that are needed and each was a visible gap on its own:
+    #
+    # * With no track colour, the fractional cell's remainder is terminal
+    #   background — up to seven eighths of a cell of it — and the bar stops short
+    #   of its own track.
+    # * With a coloured background but `░` kept as the glyph, the track's
+    #   *apparent* colour is that background plus the dots, which is lighter than
+    #   the background alone. The fractional cell can only be a glyph over the
+    #   background, so it comes out darker than the track beside it: a dark notch
+    #   in exactly the place the first gap was. A solid track has no such step,
+    #   because the two are then the same colour.
+    #
+    # Which leaves `NO_COLOR`, where a background paints nothing and a solid track
+    # would be invisible — so the glyph is chosen by whether there is a colour to
+    # paint with, and `░` is what a track looks like when there is not.
+    #
+    # The colour is `darken(0.12)` and not the larger figure it started as because
+    # a track has to be *lighter* than the background it sits on: `darken`
+    # subtracts lightness in HSL and every built-in border sits near L=0.33, so
+    # anything past about 0.3 clips to pure black — and a black track on a dark
+    # background is a hole in the pane rather than the part of the bar not yet
+    # reached, which is worse than the gap it was meant to close.
+    let (trackGlyph, trackStyle) =
+      if colorProfile() == cpNoColor: ("░", Style().faint())
+      else: (" ", Style().bg(t.border.darken(0.12)))
     rows.add span(padVisible(label, 10), t.mutedStyle).render() &
-             gauge(cur / 100.0, barWidth, HeatGradient) &
+             gauge(cur / 100.0, barWidth, HeatGradient,
+                   empty = trackGlyph, emptyStyle = trackStyle) &
              span(&" {cur:5.1f}{unit}", t.accentStyle).render()
   rows.add ""
 
@@ -243,7 +275,12 @@ proc tablePane(m: Model): string =
   tbl.columns[1].headerStyle = t.titleStyle
   tbl.columns[2].headerStyle = t.titleStyle
   tbl.columns[3].headerStyle = t.titleStyle
-  tbl.zebra = Style().bg(t.border.darken(0.28))
+  # `0.28` here was `rgb(10,12,13)` — all but black, on every one of the four
+  # themes, for the reason the metrics track above spells out: `darken` takes
+  # lightness off in HSL and these borders start near L=0.33. A zebra is a fill
+  # and survived looking like that in a way the track could not, which is why it
+  # went unnoticed. `0.14` is a tint of the border in each theme.
+  tbl.zebra = Style().bg(t.border.darken(0.14))
 
   for s in m.services:
     # An OSC 8 hyperlink in a table cell. The column still sizes to the visible

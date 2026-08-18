@@ -116,6 +116,11 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
 
 const
   Accent = rgb(120, 220, 200)
+  # The gauges' track. A colour rather than the terminal's own background,
+  # because the fractional cell at the end of a bar is a glyph over *this* — with
+  # no track colour that cell's remainder is terminal background and the bar
+  # appears to stop short of its own track by up to seven eighths of a cell.
+  TrackColour = rgb(48, 52, 64)
   WarnColour = rgb(250, 200, 90)
   ErrorColour = rgb(255, 110, 110)
 
@@ -144,9 +149,13 @@ proc seriesPane(s: Series, width, height: int): string =
   var rows = @["", "  " & big & "   " & range, ""]
   # A fixed 0-100 scale keeps the chart comparable between panels and stops it
   # rescaling every sample.
+  # The style goes *in* rather than being applied to the finished row: the widget
+  # is then able to paint a whole cell with the colour as its background instead
+  # of drawing `█` in it, which is what keeps the bar from being striped by the
+  # hairline many fonts leave at the edge of a block glyph.
   for line in barChart(s.values, inner, max(height - 2 - rows.len - 1, 1),
-                       lo = 0.0, hi = 100.0):
-    rows.add "  " & Style().fg(s.colour).render(line)
+                       Style().fg(s.colour), lo = 0.0, hi = 100.0):
+    rows.add "  " & line
   rows.add ""
   renderBox(rows.join("\n"), width, height, title = s.label,
             borderStyle = Style().faint(), titleStyle = Style().fg(s.colour))
@@ -158,8 +167,21 @@ proc gaugePane(m: Model, width, height: int): string =
     let cur = if s.values.len == 0: 0.0 else: s.values[^1]
     let label = padVisible(s.label, 10)
     let barWidth = max(inner - 10 - 8, 4)
+    # A one-stop gradient, which is how a single colour is said to the overload
+    # that takes a track: both halves of every filled cell sample to `s.colour`,
+    # so the cell is painted flat and the bar is the same one colour it was.
+    #
+    # A *solid* track, not `░` over one: the fractional cell at the end of the bar
+    # is a glyph over the track's background, while a `░` track reads as that
+    # background plus the dots — lighter — so the two would meet at a visibly
+    # darker step. `░` only when there is no colour to paint with, since a
+    # background paints nothing under `NO_COLOR` and the track would vanish.
+    let (trackGlyph, trackStyle) =
+      if colorProfile() == cpNoColor: ("░", Style().faint())
+      else: (" ", Style().bg(TrackColour))
     rows.add "  " & Style().faint().render(label) &
-             Style().fg(s.colour).render(gauge(cur / 100.0, barWidth)) &
+             gauge(cur / 100.0, barWidth, gradient(s.colour),
+                   empty = trackGlyph, emptyStyle = trackStyle) &
              &" {cur:5.1f}"
   renderBox(rows.join("\n"), width, height, title = "current",
             borderStyle = Style().faint(), titleStyle = Style().fg(Accent))
