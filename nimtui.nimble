@@ -22,10 +22,10 @@ task examples, "Build every example into bin/, several at once":
 task docs, "Generate API documentation into htmldocs/":
   exec "nim doc --project --index:on --outdir:htmldocs src/nimtui.nim"
 
-task snippets, "Build examples/treesitter/snippets.nim (needs nim-treesitter)":
+task snippets, "Build examples/treesitter/*.nim (needs nim-treesitter)":
   # Kept out of `examples` on purpose: that task builds every file in examples/,
-  # and this one needs a second library. A subdirectory is enough, since
-  # listFiles is not recursive.
+  # and these need a second library. A subdirectory is enough, since the glob in
+  # scripts/build_examples.nim is not recursive.
   #
   # nim-treesitter is not a `requires`: it is needed by one example and by
   # nothing in src/, and it vendors its own tree-sitter runtime and grammars as
@@ -48,5 +48,7 @@ task snippets, "Build examples/treesitter/snippets.nim (needs nim-treesitter)":
     exec "git clone --depth 1 " & Repo & " deps/nim-treesitter"
     ts = "deps/nim-treesitter/src"
 
-  exec "nim c --path:src --path:" & ts &
-    " -d:release -o:bin/snippets examples/treesitter/snippets.nim"
+  for f in listFiles("examples/treesitter"):
+    if f.endsWith(".nim"):
+      exec "nim c --path:src --path:" & ts & " -d:release -o:bin/" &
+        f.splitFile.name & " " & f

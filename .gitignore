@@ -1,7 +1,10 @@
 nimcache/
 htmldocs/
 bin/
+deps/
 *.exe
+# `nimble examples` runs this via `nim r` (nimcache only), but `nim c -r` leaves it here
+scripts/build_examples
 # Nim leaves the compiled binary next to a test when built directly
 tests/t[a-z]*
 !tests/t[a-z]*.nim
