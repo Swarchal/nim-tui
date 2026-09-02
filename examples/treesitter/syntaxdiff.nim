@@ -32,7 +32,9 @@
 ##
 ## Everything else is `gitdiff`: `w` toggles the intra-line pass, `b` folds to
 ## unified, `s` cycles working-tree / staged / since-HEAD, `tab` moves between
-## the file list and the diff, `enter` hands off to `git diff`'s own pager. Same
+## the file list and the diff, the wheel scrolls whichever pane the pointer is
+## over (`poMouseClicks`, `gitlog`'s `regions` / `contains` block), `enter` hands
+## off to `git diff`'s own pager. Same
 ## corners cut — removed lines pair with added lines by position, paths with
 ## spaces are not unquoted — plus one more: no grammar for `.nim`, so this repo's
 ## own diffs render through the plain fallback.
@@ -336,9 +338,12 @@ proc applyBackground(m: var Model, bg: Color) =
 
 type
   Rect = object
-    x, y, w, h: int
+    x, y, w, h: int              ## 1-based, to match what a `MouseMsg` carries
   Regions = object
     files, diff: Rect
+
+proc contains(r: Rect, x, y: int): bool =
+  r.w > 0 and r.h > 0 and x >= r.x and x < r.x + r.w and y >= r.y and y < r.y + r.h
 
 proc inner(r: Rect): Rect =
   Rect(x: r.x + 1, y: r.y + 1, w: max(r.w - 2, 0), h: max(r.h - 2, 0))
@@ -669,6 +674,25 @@ proc openInPager(m: Model): Cmd =
           proc (res: ExecResult): Msg =
             if res.error != nil: ErrorMsg(error: res.error) else: nil)
 
+proc onMouse(m: var Model, e: MouseMsg): Cmd =
+  ## The wheel only, routed to whichever pane the pointer is over — the same
+  ## `regions` / `contains` block `gitlog` uses. `poMouseClicks` is the tracking
+  ## level for it, since xterm reports the wheel as a button press at every level
+  ## and asking for motion would only add reports to ignore.
+  if e.button notin {mbWheelUp, mbWheelDown}: return nil
+  let
+    r = m.regions
+    up = e.button == mbWheelUp
+  if r.diff.contains(e.x, e.y):
+    m.diff.scrollBy(if up: -3 else: 3)
+  elif r.files.contains(e.x, e.y):
+    # One file per notch — a list is short and a jump of three skips past what
+    # the pointer is aimed at.
+    m.list.moveBy(if up: -1 else: 1, m.files.len)
+    m.rebuildDiff()
+    return m.ensureHl()
+  nil
+
 proc onKey(m: var Model, k: KeyMsg): Cmd =
   ## Three levels, in the order they have to be tried — the same shape as
   ## `gitlog`, without the modal filter it does not have: the overlay, then the
@@ -769,6 +793,9 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
     result[0].status = ""
     result[0].statusIsError = false
 
+  elif msg of MouseMsg:
+    result[1] = result[0].onMouse(MouseMsg(msg))
+
   elif msg of KeyMsg:
     result[1] = result[0].onKey(KeyMsg(msg))
 
@@ -852,6 +879,7 @@ proc helpOverlay(m: Model): string =
   const rows = [
     ("tab", "move focus between the file list and the diff"),
     ("j / k, ↑ ↓", "scroll the focused pane"),
+    ("wheel", "scroll whichever pane the pointer is over"),
     ("ctrl+d / ctrl+u", "half a page"),
     ("g / G", "top / bottom"),
     ("← →", "scroll a long line sideways (diff, unified only)"),
@@ -1052,6 +1080,21 @@ proc selfTest() =
   doAssert kn.focus == pDiff, "and tab has nowhere to move it"
   echo "ok — tab moves focus, j/k follow it, and it copes when the list is gone"
 
+  # The wheel scrolls whichever pane the pointer is over, picked by the same
+  # rectangles the view draws into.
+  var wh = fixture()
+  wh.relayout()
+  let wr = wh.regions
+  discard wh.onMouse(MouseMsg(button: mbWheelDown, action: maPress,
+                             x: wr.files.x, y: wr.files.inner.y))
+  doAssert wh.list.cursor == 1, "the wheel over the file list moves the selection one file"
+  wh.list.moveTo(0, wh.files.len)
+  wh.rebuildDiff()
+  discard wh.onMouse(MouseMsg(button: mbWheelUp, action: maPress,
+                             x: wr.diff.x, y: wr.diff.inner.y))
+  doAssert wh.list.cursor == 0, "the wheel over the diff leaves the selection alone"
+  echo "ok — the wheel scrolls the pane under the pointer"
+
   # `enter` hands off to git's pager; under runHeadless no child runs, so `then`
   # is called with an error and the status line says so rather than hanging.
   # `maxTimers = 0`: headless timers fire immediately, so the `ClearStatusMsg`
@@ -1121,5 +1164,6 @@ when isMainModule:
   model.applyBackground(Color())        # until the terminal says otherwise
 
   discard newProgram(model, update, view,
-                     options = {poAltScreen, poHideCursor, poQueryBackground},
+                     options = {poAltScreen, poHideCursor, poQueryBackground,
+                                poMouseClicks},
                      initCmd = rootCmd(path)).run()
