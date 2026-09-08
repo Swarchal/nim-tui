@@ -23,7 +23,9 @@
 ## Around that, the smaller decisions: `s` cycles what is being diffed — the
 ## working tree, the staged changes, everything since `HEAD`; the file list and
 ## the diff are two focusable panes with `tab` between them and `j` / `k` driving
-## whichever has focus, exactly as `gitlog`'s commit list and diff work, with
+## whichever has focus — with `h` / `l` scrolling the diff sideways, since a
+## unified line keeps its full length — exactly as `gitlog`'s commit list and
+## diff work, with
 ## `[` / `]` also stepping through files without leaving the diff; `enter` hands
 ## the terminal to `git diff` in its own pager; and the palette is mixed from the
 ## terminal's real
@@ -108,6 +110,7 @@ type
     files: seq[DiffFile]
     list: ListView
     diff: TextArea
+    maxX: int                      ## how far right there is anything to see
     focus: Pane
     wordLevel: bool
     sideBySide: bool
@@ -398,8 +401,8 @@ proc uniHalf(m: Model, sign: string, a, b: int, toks: seq[string],
   s.add(sign, base)
   for i in 0 ..< toks.len:
     s.add(toks[i], (if i < emph.len and emph[i]: emphS else: base))
-  # Padded, never truncated: a unified line keeps its full length so `←` / `→`
-  # have something off-screen to scroll to.
+  # Padded, never truncated: a unified line keeps its full length so `h` / `l`
+  # and `←` / `→` have something off-screen to scroll to.
   s.pad(w, base).render()
 
 proc uniLines(m: Model, row: Row, w: int): seq[string] =
@@ -453,6 +456,14 @@ proc rebuildDiff(m: var Model) =
           for ln in m.uniLines(row, w): lines.add ln
   m.diff.setLines(lines)
   m.diff.scrollTo 0
+  # How far right `h` / `l` may go. Measured here because this is the one place
+  # that knows what is in the pane, and once per rebuild rather than per
+  # keypress: a side-by-side line is padded to exactly the pane width, so the
+  # answer there is zero and the keys are inert rather than sliding the whole
+  # diff off into blank.
+  var longest = 0
+  for ln in lines: longest = max(longest, displayWidth(ln))
+  m.maxX = max(longest - w, 0)
 
 # --- talking to git ----------------------------------------------------------
 
@@ -542,7 +553,17 @@ proc onKey(m: var Model, k: KeyMsg): Cmd =
       m.rebuildDiff()
       return nil
   of pDiff:
-    if m.diff.handleKey(k): return nil
+    # `h` / `l` beside `←` / `→`, since the pane does not wrap and the reader
+    # arriving here is already driving it with `j` / `k`. Translated to the
+    # arrows rather than duplicating the scroll, so the clamp at column zero
+    # stays in `TextArea`; `maxX` is the other end of it, which the pane cannot
+    # know because it holds no opinion about how long its longest line is.
+    let dk = if k.matches("h"): KeyMsg(key: kLeft)
+             elif k.matches("l"): KeyMsg(key: kRight)
+             else: k
+    if m.diff.handleKey(dk):
+      m.diff.xOffset = clamp(m.diff.xOffset, 0, m.maxX)
+      return nil
 
   # 3 — the application.
   if k.matches("q", "ctrl+c"): return quitCmd()
@@ -636,7 +657,7 @@ proc footer(m: Model): string =
   if m.status.len > 0:
     return " " & (if m.statusIsError: t.errorStyle.render("✗ " & m.status)
                   else: t.mutedStyle.render(m.status))
-  " " & hints({"j/k": "scroll", "tab": "focus", "[/]": "file", "s": "source",
+  " " & hints({"j/k": "scroll", "h/l": "sideways", "tab": "focus", "[/]": "file", "s": "source",
                "b": "layout", "w": "word-diff", "enter": "pager", "q": "quit"})
 
 proc filesPanel(m: Model, r: Rect): string =
@@ -684,7 +705,7 @@ proc helpOverlay(m: Model): string =
     ("j / k, ↑ ↓", "scroll the focused pane"),
     ("ctrl+d / ctrl+u", "half a page"),
     ("g / G", "top / bottom"),
-    ("← →", "scroll a long line sideways (diff, unified only)"),
+    ("h / l, ← →", "scroll a long line sideways (diff, unified only)"),
     ("[ / ]", "previous / next file, without leaving the diff"),
     ("s", "cycle: working tree / staged / since HEAD"),
     ("b", "side by side or unified"),
@@ -844,6 +865,35 @@ proc selfTest() =
   discard kn.onKey(KeyMsg(key: kTab))
   doAssert kn.focus == pDiff, "and tab has nowhere to move it"
   echo "ok — tab moves focus, j/k follow it, and it copes when the list is gone"
+
+  # `h` / `l` scroll the diff sideways, and stop where the content does. The
+  # bound is the half that can only be got wrong in one direction: without it
+  # `l` slides the pane off into blank, which looks exactly like a broken
+  # render.
+  var x = fixture()
+  x.sideBySide = false          # side by side pads to the pane, so nothing to see
+  x.size = TermSize(width: 40, height: 20)   # narrow enough that a line overruns
+  x.relayout()
+  x.focus = pDiff
+  doAssert x.maxX > 0, "a unified line runs past the pane"
+  let l = KeyMsg(key: kRune, rune: "l".runeAt(0))
+  let h = KeyMsg(key: kRune, rune: "h".runeAt(0))
+  discard x.onKey(l)
+  doAssert x.diff.xOffset == 1
+  discard x.onKey(h)
+  doAssert x.diff.xOffset == 0
+  discard x.onKey(h)
+  doAssert x.diff.xOffset == 0, "and stops at column zero"
+  for _ in 0 .. x.maxX + 20: discard x.onKey(l)
+  doAssert x.diff.xOffset == x.maxX, "and at the longest line"
+  doAssert widthsOk(x), "a scrolled pane is still exactly the pane width"
+  var y = fixture()              # side by side: the keys are inert, not harmful
+  y.relayout()
+  y.focus = pDiff
+  doAssert y.maxX == 0
+  discard y.onKey(l)
+  doAssert y.diff.xOffset == 0
+  echo "ok — h/l scroll the diff sideways and stop where the content does"
 
   # `enter` hands off to git's pager; under runHeadless no child runs, so `then`
   # is called with an error and the status line says so rather than hanging.

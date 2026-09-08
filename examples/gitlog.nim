@@ -119,6 +119,7 @@ type
     filtered: seq[int]           ## indices into `commits`, in display order
     list: ListView
     diff: TextArea
+    longest: int                 ## the widest line the diff pane holds
     files: seq[FileStat]
     filter: TextInput
     mode: Mode
@@ -312,7 +313,8 @@ proc colourPatch(m: Model, patch: string): seq[string] =
   ## with one `lineStyle` — per-line colour has nowhere else to live. Which is
   ## also why the pane does not wrap: `wrapText` splits on spaces and would cut
   ## a styled line between the escape that turns a background on and the one
-  ## that turns it off. A diff wants horizontal scrolling anyway.
+  ## that turns it off. A diff wants horizontal scrolling anyway, which is what
+  ## `h` / `l` and `←` / `→` do.
   for line in patch.splitLines:
     if result.len >= MaxDiffLines:
       result.add m.theme.warnStyle.render(
@@ -436,11 +438,14 @@ proc onMouse(m: var Model, e: MouseMsg): Cmd =
   let r = m.regions
   case e.button
   of mbWheelUp, mbWheelDown:
-    let delta = if e.button == mbWheelUp: -3 else: 3
+    let dir = if e.button == mbWheelUp: -1 else: 1
     if r.diff.contains(e.x, e.y):
-      m.diff.scrollBy(delta)
+      # A pane of text scrolls by the customary three lines a notch; the commit
+      # list moves a *selection*, and every step of one loads a patch, so a
+      # three-row jump per notch both skips commits and issues three loads.
+      m.diff.scrollBy(dir * 3)
     elif r.commits.contains(e.x, e.y):
-      m.list.moveBy(delta, m.filtered.len)
+      m.list.moveBy(dir, m.filtered.len)
       return m.scheduleDiff()
   of mbLeft:
     if e.action == maPress:
@@ -455,6 +460,15 @@ proc onMouse(m: var Model, e: MouseMsg): Cmd =
           return m.scheduleDiff()
   else: discard
   nil
+
+proc maxX(m: Model): int =
+  ## How far right there is anything to see. Measured from the widest line the
+  ## pane holds rather than stored as a column, because the pane can be resized
+  ## without the patch being reloaded and the answer moves with the width.
+  ##
+  ## Without the bound, `l` slides the diff off into blank, which on screen is
+  ## indistinguishable from a broken render.
+  max(m.longest - m.diff.textWidth, 0)
 
 proc onKey(m: var Model, k: KeyMsg): Cmd =
   ## The four levels, in the order they have to be tried.
@@ -491,7 +505,31 @@ proc onKey(m: var Model, k: KeyMsg): Cmd =
   of pCommits:
     if m.list.handleKey(k, m.filtered.len): return m.scheduleDiff()
   of pDiff:
-    if m.diff.handleKey(k): return nil
+    # `h` / `l` beside `←` / `→`: the pane does not wrap, so a long line runs
+    # off the right and vim's horizontal pair is what a reader already driving
+    # this with `j` / `k` reaches for. Translated to the arrows rather than
+    # duplicating the scroll, so the clamp at column zero stays in `TextArea`;
+    # `maxX` is the other end of it, which the pane cannot know because it holds
+    # no opinion about how long its longest line is.
+    #
+    # `0` and `$` are the same pair at the ends of the travel. In vim they are
+    # positions on a *line* rather than scroll amounts, which is exactly what
+    # `xOffset` is here — the pane holds no cursor, so the leftmost and
+    # rightmost columns it can show are the only two the pair can mean. `$`
+    # needs `maxX` for the same reason `l` does, and is where the bound stops
+    # being a clamp on an increment and becomes the answer itself.
+    if k.matches("0"):
+      m.diff.xOffset = 0
+      return nil
+    if k.matches("$"):
+      m.diff.xOffset = m.maxX
+      return nil
+    let dk = if k.matches("h"): KeyMsg(key: kLeft)
+             elif k.matches("l"): KeyMsg(key: kRight)
+             else: k
+    if m.diff.handleKey(dk):
+      m.diff.xOffset = clamp(m.diff.xOffset, 0, m.maxX)
+      return nil
 
   # 4 — the application.
   if k.matches("q", "ctrl+c"): return quitCmd()
@@ -578,6 +616,11 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
     result[0].diff.setLines lines
     result[0].diff.scrollTo 0
     result[0].diff.xOffset = 0
+    # `displayWidth`, not `len`: with `c` on, every one of these lines is mostly
+    # escape sequences, which cost no columns.
+    result[0].longest = 0
+    for ln in lines:
+      result[0].longest = max(result[0].longest, displayWidth(ln))
 
   elif msg of SpinMsg:
     result[0].frame.inc
@@ -768,7 +811,8 @@ proc helpOverlay(m: Model): string =
     ("enter, o", "git show, on the terminal, in git's pager"),
     ("E", "$EDITOR on the first file the commit touched"),
     ("c", "colour the patch here, or let git do it"),
-    ("← →", "scroll the diff sideways"),
+    ("h / l, ← →", "scroll the diff sideways"),
+    ("0 / $", "the far left of the diff, and the far right"),
     ("r", "reload the history"),
     ("ctrl+z", "suspend"),
     ("q", "quit")]
@@ -791,7 +835,8 @@ proc footer(m: Model): string =
   if m.status.len > 0:
     return " " & (if m.statusIsError: t.errorStyle.render("✗ " & m.status)
                   else: t.mutedStyle.render(m.status))
-  " " & hints({"j/k": "move", "tab": "focus", "/": "filter", "enter": "show",
+  " " & hints({"j/k": "move", "h/l": "sideways", "tab": "focus",
+               "/": "filter", "enter": "show",
                "c": "colour", "?": "keys", "q": "quit"})
 
 proc view(m: Model): string =
@@ -919,6 +964,45 @@ proc selfTest() =
   bg.applyBackground hex"#fbfbfb"
   doAssert bg.theme.fg.luminance < 0.5, "and a light one wants dark"
   echo "ok — the palette follows the terminal, and copes when it will not say"
+
+  # `h` / `l` scroll the diff sideways, and stop where the content does. The
+  # bound is the half that can only be got wrong in one direction: without it
+  # `l` slides the pane off into blank, which looks exactly like a broken
+  # render. The patch is coloured here, so `longest` is also the assertion that
+  # the width is measured in columns rather than in bytes.
+  var x = fixture(3)
+  x.relayout()
+  x.focus = pDiff
+  let long = "-let x = " & "y".repeat(400)
+  (x, _) = update(x, DiffMsg(gen: x.diffGen, sha: "abc1234",
+                             patch: "@@ -1 +1 @@\n" & long & "\n",
+                             numstat: ""))
+  doAssert x.longest == displayWidth(long), "escapes cost no columns"
+  doAssert x.maxX > 0, "a patch line runs past the pane"
+  let l = KeyMsg(key: kRune, rune: "l".runeAt(0))
+  let h = KeyMsg(key: kRune, rune: "h".runeAt(0))
+  discard x.onKey(l)
+  doAssert x.diff.xOffset == 1
+  discard x.onKey(h)
+  doAssert x.diff.xOffset == 0
+  discard x.onKey(h)
+  doAssert x.diff.xOffset == 0, "and stops at column zero"
+  for _ in 0 .. x.maxX + 20: discard x.onKey(l)
+  doAssert x.diff.xOffset == x.maxX, "and at the longest line"
+  for line in x.diff.render().split('\n'):
+    doAssert displayWidth(line) == x.diff.width, "a scrolled pane keeps its width"
+  # `0` and `$` land on those same two ends in one keypress, from anywhere.
+  let zero = KeyMsg(key: kRune, rune: "0".runeAt(0))
+  let dollar = KeyMsg(key: kRune, rune: "$".runeAt(0))
+  discard x.onKey(zero)
+  doAssert x.diff.xOffset == 0, "0 goes all the way left"
+  discard x.onKey(dollar)
+  doAssert x.diff.xOffset == x.maxX, "$ goes as far right as there is anything"
+  discard x.onKey(l)
+  doAssert x.diff.xOffset == x.maxX, "and there is nothing past it"
+  for line in x.diff.render().split('\n'):
+    doAssert displayWidth(line) == x.diff.width, "a scrolled pane keeps its width"
+  echo "ok — h/l/0/$ scroll the diff sideways and stop where the content does"
 
   # `execCmd` through the real loop, with no terminal: no child is run and
   # `then` is called with an error, which is what keeps this from stalling.
