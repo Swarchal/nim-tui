@@ -31,7 +31,14 @@
 ## * **A mouse against a real layout**, which is the one this library cannot
 ##   currently help with — see the note on `regions`_ below.
 ##
-## Also, in passing: `execCmd` twice over (`enter` hands the terminal to `git
+## Also, in passing: **which branch a commit is on, asked both ways round.** The
+## decorations `git log` prints in parentheses are one direction — a ref points
+## *at* this commit — and they ride along in the log format as `%D`, drawn as
+## chips on the row. They only ever mark tips, though, so one commit past the
+## head of a branch there is nothing left saying where you are; the other
+## direction, every branch that can *reach* the commit, is a `git branch
+## --contains` in the debounced load beside the patch, named in the header. Also
+## `execCmd` twice over (`enter` hands the terminal to `git
 ## show`, which brings its own pager; `E` opens `$EDITOR` on the file under the
 ## cursor and reloads afterwards rather than trusting the screen), `suspendCmd`,
 ## bracketed paste into the filter field, a `FocusMsg` used for the one thing it
@@ -55,12 +62,39 @@ const
   Sep = '\x1f'
     ## git's own field separator (`%x1f`), so a subject containing a tab or a
     ## pipe cannot split a record. A commit subject is arbitrary user text.
-  LogFormat = "%H%x1f%h%x1f%an%x1f%at%x1f%s"
+  LogFormat = "%H%x1f%h%x1f%an%x1f%at%x1f%D%x1f%s"
+    ## `%D` is the decorations — the branch and tag names pointing *at* this
+    ## commit, which is what `git log` prints in parentheses. It goes before the
+    ## subject rather than after it so the subject stays the last field: a
+    ## separator byte in arbitrary user text then truncates only the subject,
+    ## which is the property the separator was chosen for in the first place.
+  MaxChips = 30
+    ## The most columns of decoration a commit row will give up to. A commit
+    ## with fourteen release tags on it must not push its own subject off the
+    ## row — the decorations are an annotation on the line, not the line.
+  MinSubject = 12
+    ## Columns of subject a decoration may never take. Twelve is about two
+    ## words, which is what it takes for a subject to still be recognisable as
+    ## the one you are looking for once the decorations have had the rest.
+  MinChip = 5
+    ## The narrowest an elided decoration may be cut to. Below this it says
+    ## nothing a bare marker would not, and a bare marker is not what it is.
+  MaxContain = 3
+    ## Branches named in the header before the rest become a count. The question
+    ## being answered is "is this on my branch", not "list every ref".
 
 type
   Commit = object
     sha, short, author, subject: string
     at: int64                    ## author date, seconds since the epoch
+    refs: string                 ## `%D`, verbatim: "HEAD -> main, tag: v1.2"
+
+  BranchRef = object
+    ## One answer from `git branch --contains`. `remote` is carried rather than
+    ## re-derived from a `/` in the name, because a local branch may legally be
+    ## called `feature/x` and would then be filed under the wrong colour.
+    name: string
+    remote: bool
 
   FileStat = object
     path: string
@@ -101,6 +135,7 @@ type
     sha: string
     patch: string
     numstat: string
+    branches: string             ## `git branch --contains`, unparsed
 
   RepoMsg = ref object of Msg
     root, branch, head: string
@@ -121,6 +156,7 @@ type
     diff: TextArea
     longest: int                 ## the widest line the diff pane holds
     files: seq[FileStat]
+    containedIn: seq[BranchRef]  ## the branches holding the selected commit
     filter: TextInput
     mode: Mode
     focus: Pane
@@ -172,10 +208,10 @@ proc parseCommits(output: string): seq[Commit] =
   for line in output.splitLines:
     if line.len == 0: continue
     let f = line.split(Sep)
-    if f.len < 5: continue
+    if f.len < 6: continue
     result.add Commit(sha: f[0], short: f[1], author: f[2],
                       at: (try: parseBiggestInt(f[3]).int64 except ValueError: 0),
-                      subject: f[4])
+                      refs: f[4], subject: f[5])
 
 proc repoCmd(path: string): Cmd =
   result = proc (): Msg =
@@ -207,11 +243,30 @@ proc pageCmd(root: string, gen, skip: int): Cmd =
     PageMsg(gen: gen, skip: skip, commits: parseCommits(output))
 
 proc diffCmd(root, sha: string, colour: bool, gen: int): Cmd =
+  ## Everything about the selected commit, in one debounced load.
+  ##
+  ## The containment question rides along with the patch deliberately. It is the
+  ## same subprocess-shaped slice as everything else here, it is asked about the
+  ## same commit, and — the part that matters — it is asked at the same *rate*:
+  ## holding `j` must not run a `git branch --contains` per keypress any more
+  ## than it may run a `git show` per keypress, and the debounce that already
+  ## exists is the answer to both.
   result = proc (): Msg =
     let patch = git(root, "show", "--format=",
                     "--color=" & (if colour: "always" else: "never"), sha)
     let numstat = git(root, "show", "--format=", "--numstat", sha)
-    DiffMsg(gen: gen, sha: sha, patch: patch, numstat: numstat)
+    # `-a`, so a commit that is only on a remote-tracking branch still has an
+    # answer — which is the ordinary case when reading someone else's history.
+    # `%(refname)` in full rather than `:short`, because the full form is what
+    # says whether a ref is local or remote-tracking: `refs/heads/feature/x` and
+    # `refs/remotes/origin/x` both shorten to something with a slash in it, and
+    # a local branch called `feature/x` is perfectly legal. It also avoids the
+    # default listing's `* ` marker on the current branch, which would only have
+    # to be stripped off again.
+    let branches = git(root, "branch", "-a", "--contains", sha,
+                       "--format=%(refname)")
+    DiffMsg(gen: gen, sha: sha, patch: patch, numstat: numstat,
+            branches: branches)
 
 proc spinCmd(): Cmd = after(SpinInterval, SpinMsg())
 
@@ -232,10 +287,42 @@ proc parseNumstat(s: string): seq[FileStat] =
                           added: (try: parseInt(f[0]) except ValueError: 0),
                           removed: (try: parseInt(f[1]) except ValueError: 0))
 
+proc parseBranches(output: string, current = ""): seq[BranchRef] =
+  ## `git branch --contains`, with the local branches first.
+  ##
+  ## Order is the whole of the presentation here, because only the first few
+  ## are shown: "is this commit on a branch of mine" is the question, and an
+  ## answer that spends its three slots on `origin/*` mirrors of branches the
+  ## reader already has is an answer to a different one.
+  var
+    remotes: seq[BranchRef]
+    head: seq[BranchRef]         ## the branch that is checked out, if it is one
+  for line in output.splitLines:
+    let full = line.strip
+    if full.len == 0: continue
+    if full.startsWith("refs/heads/"):
+      let name = full["refs/heads/".len .. ^1]
+      # The checked-out branch goes first, ahead of the other locals. "Is this
+      # commit on the branch I am on" is the question asked most often and the
+      # one with the shortest patience for reading a list.
+      if name == current and current.len > 0:
+        head.add BranchRef(name: name, remote: false)
+      else:
+        result.add BranchRef(name: name, remote: false)
+    elif full.startsWith("refs/remotes/"):
+      let name = full["refs/remotes/".len .. ^1]
+      # `origin/HEAD` is a symbolic ref standing for whatever the remote's
+      # default branch is, so it is always a duplicate of the branch beside it.
+      if not name.endsWith("/HEAD"):
+        remotes.add BranchRef(name: name, remote: true)
+    else: discard          # a tag or a note, which is not a branch
+  result = head & result & remotes
+
 proc matchesFilter(c: Commit, needle: string): bool =
   needle.len == 0 or
     needle in c.subject.toLowerAscii or
     needle in c.author.toLowerAscii or
+    needle in c.refs.toLowerAscii or
     c.sha.startsWith(needle)
 
 proc refilter(m: var Model) =
@@ -428,6 +515,7 @@ proc reload(m: var Model): Cmd =
   m.commits.setLen 0
   m.filtered.setLen 0
   m.files.setLen 0
+  m.containedIn.setLen 0
   m.diffOf = ""
   m.loading = true
   m.loadedAll = false
@@ -608,6 +696,7 @@ proc update(m: Model, msg: Msg): (Model, Cmd) =
     if d.gen != m.diffGen: return
     result[0].diffOf = d.sha
     result[0].files = parseNumstat(d.numstat)
+    result[0].containedIn = parseBranches(d.branches, m.branch)
     let lines =
       if d.patch.strip.len == 0:
         @["", "  (no diff — a merge commit shows none by default)"]
@@ -668,6 +757,40 @@ proc commitsPerDay(m: Model, days: int): seq[float] =
     let day = int(today - c.at div 86_400)
     if day >= 0 and day < days: result[days - 1 - day] += 1.0
 
+proc containedLabel(m: Model): string =
+  ## Which branches hold the selected commit — the half of the question that a
+  ## decoration cannot answer.
+  ##
+  ## A decoration names the commit a branch points *at*, so `git log`'s
+  ## parentheses only ever mark tips: scroll one commit past the head of a
+  ## branch and there is nothing on screen that says which branch you are
+  ## looking at any more. Containment is the other direction — every branch that
+  ## can reach this commit — and it is what actually answers "is this fix on
+  ## master yet".
+  ##
+  ## It is shown for the selection only, because it costs a subprocess per
+  ## commit; a column of it down the list would be one `git branch --contains`
+  ## per visible row per frame.
+  let t = m.theme
+  if m.selected.sha.len == 0: return ""
+  if m.diffOf != m.selected.sha:
+    # The debounce is still running, so the only honest thing to say about this
+    # commit is that we have not asked yet. The alternative is to leave the
+    # previous commit's answer on screen under the new commit's sha, which is
+    # not a stale display but a wrong one.
+    return t.mutedStyle.render("in …")
+  if m.containedIn.len == 0:
+    return t.mutedStyle.render("on no branch")
+  var s: Spans
+  s.add("in ", t.mutedStyle)
+  for i, b in m.containedIn:
+    if i >= MaxContain:
+      s.add(&" +{m.containedIn.len - MaxContain}", t.mutedStyle)
+      break
+    if i > 0: s.add(", ", t.mutedStyle)
+    s.add(b.name, if b.remote: t.infoStyle else: t.successStyle)
+  s.render()
+
 proc header(m: Model): string =
   let t = m.theme
   let title = gradientText(" gitlog", t.ramp, Style().bold())
@@ -685,7 +808,11 @@ proc header(m: Model): string =
     if m.filter.isEmpty: ""
     else: t.warnStyle.render(&"filter {m.filtered.len}/{m.commits.len}  ")
 
-  let bar = statusBar(title & where, "", filterNote & state & " ", m.size.width)
+  # The containment answer goes in the centre segment, which `statusBar` drops
+  # first when the three cannot all fit — the right degradation for it, since it
+  # is the one of the three that is an annotation rather than a location.
+  let bar = statusBar(title & where, m.containedLabel,
+                      filterNote & state & " ", m.size.width)
 
   # Second row: the shape of the history, and what the terminal said about
   # itself — the one place `ckDefault` is worth showing, since a palette that
@@ -698,16 +825,112 @@ proc header(m: Model): string =
   bar & "\n" & statusBar(" " & t.mutedStyle.render("30d ") & spark, "",
                          bgNote & " ", m.size.width)
 
-proc commitLine(m: Model, idx, width: int): string =
+proc refChips(refs: string, t: Theme, budget: int, plain = false): (string, int) =
+  ## `%D` as a row of coloured chips, and the columns they cost.
+  ##
+  ## This is the thing `git log` shows in parentheses after the sha, and it is
+  ## half the answer to "which branch is this commit on": a decoration says a
+  ## ref points *at* this commit, which is exactly what a branch tip is.
+  ##
+  ## The kind of each ref is carried by a one-column prefix rather than by its
+  ## colour alone — `*` for the checked-out branch, `#` for a tag, and the
+  ## `remote/` name a remote-tracking branch already has. Colour is the thing
+  ## this library will drop first (`NO_COLOR`, `cpAnsi16`, a user's remapped
+  ## palette), and a decoration that says *branch or tag* only in colour says
+  ## nothing at all on the terminals most likely to be reading it.
+  ##
+  ## The width is returned rather than measured by the caller because the
+  ## chips are styled: `displayWidth` would be right and would also be a second
+  ## walk over a string this proc has just built one rune at a time.
+  ##
+  ## `plain` is the selected row, and it drops every colour — but not the bold,
+  ## which is an attribute and reads on any background — rather than picking
+  ## different colours. A chip carries a foreground and nothing else, so on the
+  ## selection it is drawn *over the selection's background* — and the branch
+  ## chip's colour is `accent`, which is the selection background: the branch
+  ## the reader is most likely to be looking for disappears on exactly the row
+  ## they moved the cursor to. Colouring it against the selection instead means
+  ## a second palette that has to stay legible on one specific background,
+  ## where the prefixes already say what each ref is. This is the `NO_COLOR`
+  ## argument above, arriving from the other side.
+  if refs.len == 0 or budget <= 0: return ("", 0)
+  template styled(s: Style): Style = (if plain: Style() else: s)
+  var
+    chips: Spans
+    w = 0
+    dropped = 0
+    first = ""                        # the first chip that would not fit
+    firstStyle = Style()
+  let items = refs.split(", ")
+  for i, item in items:
+    var
+      name = item.strip
+      style = styled(t.successStyle)  # a local branch
+    if name.startsWith("tag: "):
+      name = "#" & name["tag: ".len .. ^1]
+      style = styled(t.warnStyle)
+    elif name.startsWith("HEAD -> "):
+      name = "*" & name["HEAD -> ".len .. ^1]
+      style = styled(t.accentStyle).bold
+    elif name == "HEAD":              # detached, and worth saying so
+      name = "*HEAD"
+      style = styled(t.accentStyle).bold
+    elif '/' in name:
+      style = styled(t.infoStyle)     # remote-tracking
+    let cost = displayWidth(name) + (if w == 0: 0 else: 1)
+    # A chip is cut whole or not at all: half a branch name is a branch name
+    # that is not this one. The exception is the *first* one, below, and it is
+    # an exception because "some ref points here" is worth a column even when
+    # naming it is not affordable.
+    #
+    # And what does not fit stops the row rather than being skipped over: `%D`
+    # arrives in git's own order, HEAD first, so a later chip squeezing into
+    # the gap an earlier one could not fill means the row names the *least*
+    # important ref pointing at the commit and hides the one that is checked
+    # out. A count is the better answer to "there is more than this".
+    if w + cost > budget:
+      if w == 0: first = name; firstStyle = style
+      dropped = items.len - i
+      break
+    if w > 0: chips.add(" ", Style())
+    chips.add(name, style)
+    w += cost
+  if w == 0 and first.len > 0 and budget >= MinChip:
+    # The commit list is a third of a narrow screen, so this is not a corner
+    # case: at 100 columns the rows are 36 wide and no branch name fits beside
+    # a subject. An elided chip still says a ref points at this commit, which
+    # is the thing being scrolled past that must not be invisible — and `elide`
+    # marks the cut, where a silently shortened name would read as a shorter
+    # branch that does exist. The header names it in full either way.
+    let cut = elide(first, budget)
+    chips.add(cut, firstStyle)
+    w = displayWidth(cut)
+    dropped.dec
+  if dropped > 0:
+    # What is left over is a count, which at three columns is all there is room
+    # for and is still the difference between "no refs here" and "some".
+    let note = (if w > 0: " " else: "") & "+" & $dropped
+    if w + note.len <= budget:
+      chips.add(note, styled(t.mutedStyle))
+      w += note.len
+  (chips.render(), w)
+
+proc commitLine(m: Model, idx, width: int, selected = false): string =
   let
     t = m.theme
     c = m.commits[m.filtered[idx]]
     date = fromUnix(c.at).local.format("MM-dd")
     author = elide(c.author, 12)
     meta = date & " " & author
-    room = max(width - displayWidth(meta) - 10, 6)
+    # What is left once the sha, the metadata and a readable minimum of subject
+    # have been paid for. Decorations are an annotation on the row: they may eat
+    # the slack, never the line.
+    budget = min(max(width - displayWidth(meta) - 10 - MinSubject, 0), MaxChips)
+    (chips, chipsW) = refChips(c.refs, t, budget, plain = selected)
+    room = max(width - displayWidth(meta) - 10 - (if chipsW > 0: chipsW + 1 else: 0), 6)
   var line: Spans
   line.add(c.short & " ", t.secondaryStyle)
+  if chipsW > 0: line.add(chips & " ", Style())
   line.add(padVisible(elide(c.subject, room), room) & " ", Style())
   line.add(meta, t.mutedStyle)
   line.render()
@@ -732,7 +955,7 @@ proc commitsPane(m: Model, r: Rect): string =
                      cursor: m.list.cursor - m.list.vp.top)
   var items = newSeqOfCap[string](inner.h)
   for i in m.list.vp.top ..< min(m.list.vp.top + inner.h, m.filtered.len):
-    items.add m.commitLine(i, inner.w - 2)
+    items.add m.commitLine(i, inner.w - 2, selected = i == m.list.cursor)
   let body =
     if m.filtered.len == 0 or inner.w <= 1:
       padBlock(t.mutedStyle.render("  no commits match"), inner.w, inner.h)
@@ -807,10 +1030,12 @@ proc helpOverlay(m: Model): string =
   const rows = [
     ("j / k, ↑ ↓", "move (the focused pane's own keys)"),
     ("tab", "move focus between commits and diff"),
-    ("/", "filter by subject, author or sha"),
+    ("/", "filter by subject, author, ref or sha"),
     ("enter, o", "git show, on the terminal, in git's pager"),
     ("E", "$EDITOR on the first file the commit touched"),
     ("c", "colour the patch here, or let git do it"),
+    ("*name", "a branch tip; #name a tag"),
+    ("header", "the branches that contain the selection"),
     ("h / l, ← →", "scroll the diff sideways"),
     ("0 / $", "the far left of the diff, and the far right"),
     ("r", "reload the history"),
@@ -880,12 +1105,74 @@ proc selfTest() =
   # Parsing is the boundary everything else rests on, and git's field separator
   # is chosen so a subject containing one cannot break it.
   let parsed = parseCommits(
-    "deadbeef\x1fdeadbee\x1fada\x1f1700000000\x1fsubject with\ta tab")
+    "deadbeef\x1fdeadbee\x1fada\x1f1700000000\x1fHEAD -> main, tag: v1\x1f" &
+    "subject with\ta tab")
   doAssert parsed.len == 1
   doAssert parsed[0].author == "ada"
   doAssert parsed[0].subject == "subject with\ta tab"
   doAssert parsed[0].at == 1_700_000_000
+  doAssert parsed[0].refs == "HEAD -> main, tag: v1"
+  # An undecorated commit is the overwhelming majority, and its record has an
+  # empty field rather than a missing one — the trailing subject still parses.
+  let bare = parseCommits("deadbeef\x1fdeadbee\x1fada\x1f1700000000\x1f\x1fplain")
+  doAssert bare.len == 1 and bare[0].refs == "" and bare[0].subject == "plain"
   echo "ok — a log record survives a subject containing a separator-ish byte"
+
+  # The two halves of the branch question, which are different questions.
+  # Decorations say what points *at* a commit ...
+  let t = DefaultTheme
+  let (chips, chipsW) = refChips("HEAD -> main, origin/main, tag: v1", t, 40)
+  doAssert displayWidth(chips) == chipsW, "the width returned is the width drawn"
+  doAssert "*main" in chips and "#v1" in chips and "origin/main" in chips,
+    "the kind of a ref survives without colour"
+  let (cut, cutW) = refChips("HEAD -> main, origin/main, tag: v1", t, 8)
+  doAssert cutW <= 8, "decorations may eat the slack, never the line"
+  doAssert "*main" in cut and "origin/main" notin cut,
+    "a chip is cut whole or not at all"
+  doAssert refChips("", t, 40)[1] == 0
+  # On the selected row the chips carry no colour of their own. A chip sets a
+  # foreground only, so it is drawn over the selection's background — and the
+  # branch chip's colour *is* that background, which makes the branch name
+  # vanish on the one row the cursor is on. Bytes rather than dimensions,
+  # because nothing about the width of this is wrong.
+  let (onSel, onSelW) = refChips("HEAD -> main, tag: v1", t, 40, plain = true)
+  doAssert "38;2;" notin onSel and "38;5;" notin onSel,
+    "the selection's own foreground has to reach the chips"
+  doAssert "\e[1m" in onSel, "bold is not a colour, and still marks the checked-out branch"
+  doAssert onSelW == displayWidth(onSel)
+  doAssert "*main" in onSel and "#v1" in onSel, "and the prefixes still say which is which"
+  echo "ok — decorations are cut to a budget, whole chips at a time"
+
+  # ... and containment says what can *reach* it, which is the half `git log`
+  # cannot show and the reason a commit ten back from a tip is not anonymous.
+  let held = parseBranches(
+    "refs/heads/main\nrefs/remotes/origin/main\nrefs/remotes/origin/HEAD\n" &
+    "refs/heads/feature/x\nrefs/tags/v1\n")
+  doAssert held.len == 3, "a tag is not a branch, and origin/HEAD is a duplicate"
+  doAssert not held[0].remote and not held[1].remote,
+    "local branches come first, since only the first few are shown"
+  doAssert held[0].name == "main" and held[1].name == "feature/x"
+  doAssert held[2].name == "origin/main" and held[2].remote
+  echo "ok — containment lists the branches that hold a commit, mine first"
+
+  # And the load that answers it is the debounced one, so holding `j` runs no
+  # more of these than it runs `git show`.
+  var b = fixture(3)
+  b.list.moveTo(0, b.filtered.len)
+  (b, _) = update(b, DiffMsg(gen: b.diffGen, sha: b.selected.sha,
+                             patch: "@@ -1 +1 @@\n+x\n", numstat: "",
+                             branches: "refs/heads/main\n"))
+  doAssert b.containedIn.len == 1 and b.containedIn[0].name == "main"
+  doAssert "main" in b.containedLabel
+  b.list.moveTo(1, b.filtered.len)
+  doAssert "…" in b.containedLabel,
+    "a commit whose answer has not arrived must not wear the previous one\'s"
+  # An answer of "nothing" is an answer, and a common one: a commit reachable
+  # only from a tag, or from a remote head with no branch on it.
+  (b, _) = update(b, DiffMsg(gen: b.diffGen, sha: b.selected.sha,
+                             patch: "", numstat: "", branches: ""))
+  doAssert "no branch" in b.containedLabel
+  echo "ok — the containment answer belongs to the commit it was asked about"
 
   let stats = parseNumstat("12\t3\tsrc/a.nim\n-\t-\tlogo.png\n")
   doAssert stats.len == 2
@@ -1031,7 +1318,7 @@ when isMainModule:
   var model = Model(theme: DefaultTheme, loading: true, animate: true, gen: 1)
   model.list = initListView(height = 10, wrapAround = false)
   model.diff = initTextArea(width = 40, height = 10, wrap = false)
-  model.filter = initTextInput(placeholder = "subject, author or sha")
+  model.filter = initTextInput(placeholder = "subject, author, ref or sha")
   model.applyBackground Color()      # until the terminal says otherwise
 
   discard newProgram(model, update, view,
