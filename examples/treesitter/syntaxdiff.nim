@@ -316,6 +316,21 @@ proc applyBackground(m: var Model, bg: Color) =
   ## answered `OSC 11`, a dark stand-in when it did not. `addEmphStyle` no longer
   ## brightens the text to `t.fg` for the same reason: `mergedSpans` keeps
   ## whatever colour the capture put there.
+  ##
+  ## **Three levels have to fit where `syntaxlog` fits two**, and that is what
+  ## sets the numbers. The pane, the changed line and the changed *token* are all
+  ## backgrounds here, and the ladder cannot simply be stretched: the top of it
+  ## is bounded by the faintest capture that has to stay legible on it — the
+  ## palette's comment grey, `#7f848e`, which sits at 2.4:1 on the emphasis tint
+  ## at 0.40 and 1.8:1 at 0.52. So the *line* tint takes the room instead, from
+  ## 0.16 to 0.30 — 1.34:1 against the pane where it was 1.12:1, which is the
+  ## difference between a band and a shade — and the emphasis, now only 1.4:1
+  ## clear of the line it sits on, is given `underline` to say what the
+  ## background no longer can. An attribute is the right channel for it twice
+  ## over: it is the one thing the capture cannot be using, and attributes are
+  ## never suppressed, so the intra-line pass survives `cpNoColor` where the
+  ## whole tint ladder does not. It is also what `gitdiff`'s own foreground-only
+  ## fallback already marks a changed token with.
   m.bg = bg
   let dark = bg.kind == ckDefault or bg.luminance < 0.5
   m.theme = derive(hex"#5ad1c0", dark = dark)
@@ -323,10 +338,10 @@ proc applyBackground(m: var Model, bg: Color) =
     t = m.theme
     ground = if bg.kind != ckDefault: bg
              elif dark: hex"#161616" else: hex"#f4f4f4"
-  m.addStyle = Style().bg(lerp(ground, t.success, 0.16))
-  m.delStyle = Style().bg(lerp(ground, t.error, 0.16))
-  m.addEmphStyle = Style().bg(lerp(ground, t.success, 0.40))
-  m.delEmphStyle = Style().bg(lerp(ground, t.error, 0.40))
+  m.addStyle = Style().bg(lerp(ground, t.success, 0.30))
+  m.delStyle = Style().bg(lerp(ground, t.error, 0.30))
+  m.addEmphStyle = Style().bg(lerp(ground, t.success, 0.46)).underline()
+  m.delEmphStyle = Style().bg(lerp(ground, t.error, 0.46)).underline()
   m.hunkStyle = Style().fg(t.info).bg(lerp(ground, t.info, 0.10))
   m.fillerStyle = Style().bg(lerp(ground, t.muted, 0.10))
   m.paneStyle = Style().bg(lerp(ground, t.accent, 0.05))
